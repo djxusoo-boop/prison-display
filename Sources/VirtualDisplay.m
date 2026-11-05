@@ -46,6 +46,30 @@ static void ADRetireHelper(NSTask *task, NSPipe *input) {
     if (task.running) kill(task.processIdentifier, SIGKILL);
     ADWaitForExit(task, 1.0);
 }
+static unsigned int ADLocalProfile(NSUInteger width, NSUInteger height) {
+    if (width == 2560 && height == 1440) return 1;
+    if (width == 3200 && height == 1800) return 2;
+    if (width == 3840 && height == 2160) return 3;
+    if (width == 5120 && height == 2880) return 4;
+    return 15;
+}
+// macOS lists every size of a new virtual monitor but activates a default
+// (1920×1080 on macOS 26) instead of the largest. Select the exact 1× mode.
+// Returns 0 if already active, 1 if changed, -1 if unavailable.
+static int ADSelectExactMode(CGDirectDisplayID display, NSUInteger width, NSUInteger height) {
+    if (CGDisplayPixelsWide(display) == width && CGDisplayPixelsHigh(display) == height) return 0;
+    NSDictionary *options = @{(__bridge NSString *)kCGDisplayShowDuplicateLowResolutionModes: @YES};
+    NSArray *modes = CFBridgingRelease(CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef)options));
+    for (id item in modes) {
+        CGDisplayModeRef mode = (__bridge CGDisplayModeRef)item;
+        if (CGDisplayModeGetWidth(mode) != width || CGDisplayModeGetHeight(mode) != height || CGDisplayModeGetPixelWidth(mode) != width) continue;
+        CGDisplayConfigRef config = NULL;
+        if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) return -1;
+        if (CGConfigureDisplayWithDisplayMode(config, display, mode, NULL) != kCGErrorSuccess) { CGCancelDisplayConfiguration(config); return -1; }
+        return CGCompleteDisplayConfiguration(config, kCGConfigureForSession) == kCGErrorSuccess ? 1 : -1;
+    }
+    return -1;
+}
 static NSString *ADLayoutKey(NSUInteger slot) {
     if (slot == 0) return @"PrisonDisplay.layout";
     if (slot == 1) return @"PrisonDisplay.layout.2";
@@ -75,24 +99,17 @@ static NSString *ADLayoutKey(NSUInteger slot) {
         return NO;
     }
     @try {
-        BOOL localHiDPI = self.screenSlot == 2;
-        NSUInteger backingWidth = localHiDPI ? width * 2 : width;
-        NSUInteger backingHeight = localHiDPI ? height * 2 : height;
         CGVirtualDisplayDescriptor *d = [[descriptorClass alloc] init];
         d.name = self.screenSlot == 0 ? @"PRISON DISPLAY · Pantalla remota" : (self.screenSlot == 1 ? @"PRISON DISPLAY · Pantalla 2" : @"PRISON DISPLAY · Monitor virtual local");
-        d.maxPixelsWide = (unsigned int)backingWidth; d.maxPixelsHigh = (unsigned int)backingHeight;
-        d.sizeInMillimeters = CGSizeMake(backingWidth * 25.4 / (localHiDPI ? 220 : 100), backingHeight * 25.4 / (localHiDPI ? 220 : 100));
+        d.maxPixelsWide = (unsigned int)width; d.maxPixelsHigh = (unsigned int)height;
+        d.sizeInMillimeters = CGSizeMake(width * 25.4 / 100, height * 25.4 / 100);
         d.vendorID = 0xA1DE; d.productID = 1 + (unsigned int)self.screenSlot;
         // Reuse one identity per resolution. Random identities accumulate ICC
         // profiles and display records on every reconnect or configuration test.
         unsigned int serial = ((unsigned int)width << 16) | (unsigned int)height;
-        // The local HDMI virtual monitor needs a fresh product identity for
-        // every requested desktop size. Recent macOS versions otherwise reuse
-        // a remembered 2× mode (for example 1920×1080 on a 3840×2160 display).
-        if (self.screenSlot == 2) {
-            unsigned int profile = width == 2560 && height == 1440 ? 1u : (width == 3200 && height == 1800 ? 2u : (width == 3840 && height == 2160 ? 3u : 15u));
-            d.productID = 0x5200u | profile;
-        }
+        // The local HDMI virtual monitor keeps a separate product identity per
+        // desktop size so a remembered mode of another size is never reused.
+        if (self.screenSlot == 2) d.productID = 0x5200u | ADLocalProfile(width, height);
         d.serialNum = serial;
         if ([d respondsToSelector:@selector(setSerialNumber:)]) d.serialNumber = serial;
         d.redPrimary = CGPointMake(0.64, 0.33); d.greenPrimary = CGPointMake(0.30, 0.60);
@@ -100,11 +117,11 @@ static NSString *ADLayoutKey(NSUInteger slot) {
         [d setDispatchQueue:dispatch_queue_create("PrisonDisplay.virtual-events", DISPATCH_QUEUE_SERIAL)];
         _screen = [[displayClass alloc] initWithDescriptor:d];
         CGVirtualDisplaySettings *s = [[settingsClass alloc] init];
-        // The local monitor uses a 2× backing surface so macOS exposes the
-        // requested size as desktop space instead of silently halving 4K to
-        // 1920×1080. Remote displays keep their existing 1× capture modes.
-        s.hiDPI = localHiDPI ? 1 : 0;
-        s.modes = @[[[modeClass alloc] initWithWidth:(localHiDPI ? backingWidth : width) height:(localHiDPI ? backingHeight : height) refreshRate:60.0]];
+        // 1× surfaces: the requested size is real desktop space and costs no
+        // hidden 2× backing store. macOS still lists smaller default modes, so
+        // the helper selects this exact one once the display is online.
+        s.hiDPI = 0;
+        s.modes = @[[[modeClass alloc] initWithWidth:width height:height refreshRate:60.0]];
         if (!_screen || ![_screen applySettings:s]) {
             _screen = nil; if (error) *error = @"macOS rechazó la pantalla virtual."; return NO;
         }
@@ -275,7 +292,10 @@ static NSString *ADLayoutKey(NSUInteger slot) {
     NSUInteger slot = arguments.count == 6 ? arguments[5].integerValue : 0;
     if (slot > 2) return 2;
     NSUInteger width = arguments[2].integerValue, height = arguments[3].integerValue;
-    if (width < 320 || width > 4096 || height < 200 || height > 2160) return 2;
+    // Remote screens are limited by the H.264 stream; the local HDMI desktop
+    // is only scaled by WindowServer and can be larger (up to 5K).
+    NSUInteger maxWidth = slot == 2 ? 5120 : 3840, maxHeight = slot == 2 ? 2880 : 2160;
+    if (width < 320 || width > maxWidth || height < 200 || height > maxHeight) return 2;
     // One display owner per user, including diagnostic/duplicate app copies.
     NSString *leasePath = slot == 0 ? [NSString stringWithFormat:@"/private/tmp/prisondisplay-virtual-%u.lock", getuid()] : [NSString stringWithFormat:@"/private/tmp/prisondisplay-virtual-%u-%lu.lock", getuid(), (unsigned long)(slot + 1)];
     int lease = open(leasePath.fileSystemRepresentation, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -305,6 +325,16 @@ static NSString *ADLayoutKey(NSUInteger slot) {
     while (!CGDisplayIsOnline(screen.displayID) && deadline.timeIntervalSinceNow > 0)
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     if (!CGDisplayIsOnline(screen.displayID)) { [screen destroy]; close(lease); printf("ERROR:La pantalla virtual no quedó disponible.\n"); fflush(stdout); return 1; }
+    int selected = ADSelectExactMode(screen.displayID, width, height);
+    deadline = [NSDate dateWithTimeIntervalSinceNow:3];
+    while (selected == 1 && (CGDisplayPixelsWide(screen.displayID) != width || CGDisplayPixelsHigh(screen.displayID) != height) && deadline.timeIntervalSinceNow > 0)
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    if (CGDisplayPixelsWide(screen.displayID) != width || CGDisplayPixelsHigh(screen.displayID) != height) {
+        [screen destroy]; close(lease); printf("ERROR:macOS no activó %lu × %lu en la pantalla virtual. Prueba un tamaño menor.\n", (unsigned long)width, (unsigned long)height); fflush(stdout); return 1;
+    }
+    // The size changed after the saved arrangement was applied; re-anchor it.
+    // Untouched displays keep the single arrangement transaction of creation.
+    if (selected == 1) [screen restoreLayout];
     printf("%u\n", screen.displayID); fflush(stdout);
     NSLock *lock = [[NSLock alloc] init]; __block BOOL alive = YES;
     NSFileHandle *input = [NSFileHandle fileHandleWithStandardInput];

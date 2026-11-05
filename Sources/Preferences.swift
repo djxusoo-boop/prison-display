@@ -31,32 +31,114 @@ struct DisplayResolutionProfile: Equatable {
     let width: Int
     let height: Int
     let recommendedFPS: Int
+    init(title: String, width: Int, height: Int, recommendedFPS: Int) {
+        self.title = title; self.width = width; self.height = height; self.recommendedFPS = recommendedFPS
+    }
+    init(_ width: Int, _ height: Int, note: String? = nil) {
+        let base = "\(width) × \(height)"
+        self.init(title: note.map { base + " · " + $0 } ?? base, width: width, height: height, recommendedFPS: width * height > 1920 * 1200 ? 30 : 60)
+    }
+    var aspect: String {
+        func gcd(_ a: Int, _ b: Int) -> Int { b == 0 ? a : gcd(b, a % b) }
+        let d = gcd(width, height); let w = width / d, h = height / d
+        return w == 8 && h == 5 ? "16:10" : "\(w):\(h)"
+    }
 
-    // Keep the first three entries in their historical order so existing
-    // preferences continue to select the same resolution after an update.
+    // Saved preferences store an index into this list: never reorder or remove
+    // entries, only append. The menu shows them sorted (see menuOrder).
     static let all = [
-        DisplayResolutionProfile(title: "1920 × 1080", width: 1920, height: 1080, recommendedFPS: 60),
-        DisplayResolutionProfile(title: "1280 × 720", width: 1280, height: 720, recommendedFPS: 60),
-        DisplayResolutionProfile(title: "2560 × 1440", width: 2560, height: 1440, recommendedFPS: 30)
+        DisplayResolutionProfile(1920, 1080),
+        DisplayResolutionProfile(1280, 720),
+        DisplayResolutionProfile(2560, 1440),
+        DisplayResolutionProfile(3200, 1800),
+        DisplayResolutionProfile(3840, 2160, note: "4K"),
+        DisplayResolutionProfile(1600, 900),
+        DisplayResolutionProfile(2048, 1152),
+        DisplayResolutionProfile(2304, 1296),
+        DisplayResolutionProfile(2880, 1620),
+        DisplayResolutionProfile(3520, 1980),
+        DisplayResolutionProfile(1440, 900),
+        DisplayResolutionProfile(1680, 1050),
+        DisplayResolutionProfile(1920, 1200),
+        DisplayResolutionProfile(2304, 1440),
+        DisplayResolutionProfile(2560, 1600),
+        DisplayResolutionProfile(2880, 1800),
+        DisplayResolutionProfile(3200, 2000),
+        DisplayResolutionProfile(3456, 2160)
     ]
+    // Indices of `all`, grouped by shape and ordered by size for the menu.
+    static var menuOrder: [Int] {
+        all.indices.sorted { a, b in
+            let x = all[a], y = all[b]
+            return x.aspect != y.aspect ? x.aspect == "16:9" : x.width < y.width
+        }
+    }
 
+    // Fallback local sizes when the HDMI monitor reports no usable native mode.
     static let local = [
         DisplayResolutionProfile(title: "2560 × 1440", width: 2560, height: 1440, recommendedFPS: 60),
         DisplayResolutionProfile(title: "3200 × 1800", width: 3200, height: 1800, recommendedFPS: 60),
-        DisplayResolutionProfile(title: "3840 × 2160 · 4K", width: 3840, height: 2160, recommendedFPS: 60)
+        DisplayResolutionProfile(title: "3840 × 2160 · 4K", width: 3840, height: 2160, recommendedFPS: 60),
+        DisplayResolutionProfile(title: "5120 × 2880 · 5K", width: 5120, height: 2880, recommendedFPS: 60)
     ]
+    // Exact fractions keep common sizes round (1920 × 4/3 = 2560).
+    static let localScales: [(numerator: Int, denominator: Int, label: String)] = [
+        (5, 4, "1,25"), (4, 3, "1,33"), (3, 2, "1,5"), (5, 3, "1,67"), (7, 4, "1,75"),
+        (2, 1, "2"), (9, 4, "2,25"), (5, 2, "2,5"), (8, 3, "2,67"), (3, 1, "3")
+    ]
+    // More desktop than the monitor shows, keeping its exact shape so it fills
+    // the panel without bars. Limited to 5120 × 2880 of virtual desktop.
+    static func local(nativeWidth: Int, nativeHeight: Int) -> [DisplayResolutionProfile] {
+        guard nativeWidth >= 640, nativeHeight >= 400 else { return local }
+        var result: [DisplayResolutionProfile] = []
+        for scale in localScales {
+            let width = (nativeWidth * scale.numerator / scale.denominator + 4) / 8 * 8
+            let height = (width * nativeHeight / nativeWidth + 1) / 2 * 2
+            guard width <= 5120, height <= 2880, height >= 400, !result.contains(where: { $0.width == width }) else { continue }
+            result.append(DisplayResolutionProfile(title: "\(width) × \(height) · ×\(scale.label) de espacio", width: width, height: height, recommendedFPS: 60))
+        }
+        return result.isEmpty ? local : result
+    }
 }
 
 struct LocalVirtualDisplayPreferences: Equatable {
     var resolution: Int
+    // Chosen virtual desktop for scaled HDMI menus, e.g. "3840x2160".
+    var size: String?
     init(defaults: UserDefaults = .standard) {
         let stored = defaults.object(forKey: "PrisonDisplay.localVirtual.resolution") == nil ? DisplayResolutionProfile.local.count - 1 : defaults.integer(forKey: "PrisonDisplay.localVirtual.resolution")
         resolution = DisplayResolutionProfile.local.indices.contains(stored) ? stored : DisplayResolutionProfile.local.count - 1
+        size = defaults.string(forKey: "PrisonDisplay.localVirtual.size")
     }
     func save(defaults: UserDefaults = .standard) {
         defaults.set(resolution, forKey: "PrisonDisplay.localVirtual.resolution")
+        if let size = size { defaults.set(size, forKey: "PrisonDisplay.localVirtual.size") }
     }
 }
+
+// Size of the video actually sent. The desktop can be larger than the image:
+// ScreenCaptureKit scales it on the GPU, so the other Mac shows more space
+// without having to decode (or the Wi-Fi carry) every desktop pixel.
+struct StreamOutputProfile: Equatable {
+    let title: String
+    let maxWidth: Int?
+    let maxHeight: Int?
+    static let all = [
+        StreamOutputProfile(title: "Automática · hasta 2560 × 1440", maxWidth: 2560, maxHeight: 1440),
+        StreamOutputProfile(title: "Máxima · igual que el escritorio", maxWidth: nil, maxHeight: nil),
+        StreamOutputProfile(title: "Hasta 3200 × 1800 · muy nítida", maxWidth: 3200, maxHeight: 1800),
+        StreamOutputProfile(title: "Hasta 1920 × 1080 · más fluida", maxWidth: 1920, maxHeight: 1080),
+        StreamOutputProfile(title: "Hasta 1600 × 900", maxWidth: 1600, maxHeight: 900),
+        StreamOutputProfile(title: "Hasta 1280 × 720 · Wi-Fi lento", maxWidth: 1280, maxHeight: 720)
+    ]
+    // Fit inside the limit, keep the aspect ratio and use even dimensions (H.264).
+    func size(forDesktopWidth width: Int, height: Int) -> (width: Int, height: Int) {
+        guard let maxWidth = maxWidth, let maxHeight = maxHeight, width > maxWidth || height > maxHeight else { return (width, height) }
+        let scale = min(Double(maxWidth) / Double(width), Double(maxHeight) / Double(height))
+        return (max(2, Int(Double(width) * scale) & ~1), max(2, Int(Double(height) * scale) & ~1))
+    }
+}
+
 
 struct DisplayPreferences: Equatable {
     var mode = 0
@@ -64,6 +146,7 @@ struct DisplayPreferences: Equatable {
     var fps = 0
     var quality = 0
     var cursor = 0
+    var output = 0
     init(defaults: UserDefaults = .standard, compatibilityDefaults: Bool = false, screenSlot: Int = 0) {
         let prefix = screenSlot == 0 ? "PrisonDisplay.settings." : "PrisonDisplay.settings.2."
         func index(_ key: String, _ count: Int, _ fallback: Int = 0) -> Int {
@@ -73,10 +156,11 @@ struct DisplayPreferences: Equatable {
         }
         mode = index("mode", 2); resolution = index("resolution", DisplayResolutionProfile.all.count, compatibilityDefaults ? 1 : 0)
         fps = index("fps", 2, compatibilityDefaults ? 1 : 0); quality = index("quality", VideoQualityProfile.all.count); cursor = index("cursor", 2)
+        output = index("output", StreamOutputProfile.all.count)
     }
     func save(defaults: UserDefaults = .standard, screenSlot: Int = 0) {
         let prefix = screenSlot == 0 ? "PrisonDisplay.settings." : "PrisonDisplay.settings.2."
-        for (name, value) in [("mode", mode), ("resolution", resolution), ("fps", fps), ("quality", quality), ("cursor", cursor)] {
+        for (name, value) in [("mode", mode), ("resolution", resolution), ("fps", fps), ("quality", quality), ("cursor", cursor), ("output", output)] {
             defaults.set(value, forKey: prefix + name)
         }
     }

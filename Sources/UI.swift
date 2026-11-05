@@ -323,12 +323,17 @@ final class PrisonViewerWindow: NSWindow {
 
 #if SENDER || UNIFIED
 struct StreamOptions: Equatable {
+    // width/height: desktop size (virtual screen). outputWidth/outputHeight:
+    // encoded video size; zero means the same as the desktop.
     let extend: Bool; let width: Int; let height: Int; let fps: Int; let bitrate: Int; var nativeCursor = false
+    var outputWidth = 0; var outputHeight = 0
+    var videoWidth: Int { outputWidth > 0 ? outputWidth : width }
+    var videoHeight: Int { outputHeight > 0 ? outputHeight : height }
     // At 60 FPS a QP cap of 32 forced RTVC to omit most scrolling desktop
     // images. Keep a bounded text-quality cap while allowing continuous motion.
     var maxFrameQP: Int? { bitrate >= 20_000_000 ? (fps >= 50 ? 36 : 32) : nil }
     func sameCapture(as other: StreamOptions) -> Bool {
-        extend == other.extend && width == other.width && height == other.height && fps == other.fps && nativeCursor == other.nativeCursor
+        extend == other.extend && width == other.width && height == other.height && videoWidth == other.videoWidth && videoHeight == other.videoHeight && fps == other.fps && nativeCursor == other.nativeCursor
     }
 }
 final class SenderEngine {
@@ -738,7 +743,7 @@ final class SenderEngine {
                     self.latest.clear()
                     let encoder: H264Encoder
                     func makeEncoder(compatible: Bool) throws -> H264Encoder {
-                        try H264Encoder(width: options.width, height: options.height, fps: options.fps, bitrate: self.quality.bitrate, startingSequence: self.lastSequence, maxFrameQP: options.maxFrameQP, pipelined: self.window.availableSlots >= 2, compatibilityLowLatency: compatible)
+                        try H264Encoder(width: options.videoWidth, height: options.videoHeight, fps: options.fps, bitrate: self.quality.bitrate, startingSequence: self.lastSequence, maxFrameQP: options.maxFrameQP, pipelined: self.window.availableSlots >= 2, compatibilityLowLatency: compatible)
                     }
                     if self.compatibilityEncoderEnabled {
                         do { encoder = try makeEncoder(compatible: true) }
@@ -789,7 +794,7 @@ final class SenderEngine {
                         self.applyWhenDrained()
                     } }
                     capture.onError = { [weak self] error in self?.queue.async { if self?.generation == token { self?.failSession(error) } } }
-                    capture.start(displayID: display, width: options.width, height: options.height, fps: options.fps, queue: self.queue) { [weak self, weak capture] error in
+                    capture.start(displayID: display, width: options.videoWidth, height: options.videoHeight, fps: options.fps, queue: self.queue) { [weak self, weak capture] error in
                         self?.queue.async {
                             guard let self = self, let capture = capture, self.active, self.capture === capture, self.generation == token else { return }
                             if let error = error {
@@ -1396,6 +1401,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let resolution = PrisonPopUpButton()
     let fps = PrisonPopUpButton()
     let quality = PrisonPopUpButton()
+    let output = PrisonPopUpButton()
     let cursorStyle = PrisonPopUpButton()
     let localDisplay = PrisonPopUpButton()
     let localResolution = PrisonPopUpButton()
@@ -1404,6 +1410,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let localStop = PrisonSecondaryButton(title: "Detener", target: nil, action: nil)
     let localStatus = NSTextField(wrappingLabelWithString: "Conecta un monitor HDMI para crear un escritorio de mayor resolución.")
     private var localDisplayIDs: [CGDirectDisplayID] = []
+    private var localProfiles: [DisplayResolutionProfile] = []
     private var localVirtual: ADVirtualScreen?
     private var localPhysicalDisplay: CGDirectDisplayID = 0
     private var localPhysicalOrigin = CGPoint.zero
@@ -1480,23 +1487,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         #endif
         #if SENDER
         if !hosted { addText("Más espacio. La misma libertad.", to: root) }
-        let settings = card("AJUSTES AVANZADOS DE IMAGEN", in: root)
-        if let box = settings.superview { advancedViews.append(box) }
+        // Desktop size and sent image are everyday choices: always visible.
+        let settings = card("RESOLUCIÓN E IMAGEN", in: root)
         mode.addItems(withTitles: ["Extender escritorio", "Duplicar esta pantalla"])
-        resolution.addItems(withTitles: DisplayResolutionProfile.all.map { $0.title })
+        fillResolutionMenu()
         fps.addItems(withTitles: ["60 FPS", "30 FPS"])
         cursorStyle.addItems(withTitles: ["Rápido · mínimo retraso", "Original · formas exactas"])
         quality.addItems(withTitles: VideoQualityProfile.all.map { $0.title })
+        output.addItems(withTitles: StreamOutputProfile.all.map { $0.title })
         let system = ProcessInfo.processInfo.operatingSystemVersion
         let saved = DisplayPreferences(compatibilityDefaults: system.majorVersion == 10 && system.minorVersion == 13, screenSlot: screenSlot)
-        mode.selectItem(at: saved.mode); resolution.selectItem(at: saved.resolution)
-        fps.selectItem(at: saved.fps); quality.selectItem(at: saved.quality); cursorStyle.selectItem(at: saved.cursor)
+        mode.selectItem(at: saved.mode); resolution.selectItem(withTag: saved.resolution)
+        fps.selectItem(at: saved.fps); quality.selectItem(at: saved.quality); cursorStyle.selectItem(at: saved.cursor); output.selectItem(at: saved.output)
         if !virtualDisplaySupported {
             mode.item(at: 0)?.isEnabled = false; mode.selectItem(at: 1)
             addText("Este macOS permite enviar una pantalla duplicada. Para extender desde este equipo necesita un sistema que admita pantallas virtuales. Puedes recibir aquí el escritorio extendido de otro Mac.", to: settings)
         }
-        for control in [mode, resolution, fps, quality, cursorStyle] { control.target = self; control.action = #selector(settingsChanged) }
-        row("Modo", mode, in: settings); row("Resolución", resolution, in: settings); row("Fluidez", fps, in: settings); row("Calidad", quality, in: settings); row("Cursor", cursorStyle, in: settings)
+        for control in [mode, resolution, output, fps, quality, cursorStyle] { control.target = self; control.action = #selector(settingsChanged) }
+        row("Modo", mode, in: settings); row("Escritorio", resolution, in: settings); row("Imagen", output, in: settings); row("Fluidez", fps, in: settings); row("Calidad", quality, in: settings); row("Cursor", cursorStyle, in: settings)
+        addText("Escritorio es el espacio para ventanas en el otro Mac; puede superar la resolución de su pantalla. Imagen es lo que viaja por el Wi-Fi: si es menor, el escritorio se reduce para mostrarlo entero. Para 4K nítido elige Máxima y una calidad de 20 Mb/s o más.", to: settings)
         addText("Rápido prioriza el movimiento. Original muestra los cursores de FL Studio y otras apps dentro del vídeo.", to: settings)
         addText("La calidad marca el máximo. 40 Mb/s aprovecha enlaces rápidos; la app adapta el vídeo si el Wi-Fi se satura. No depende de la velocidad de Internet.", to: settings)
         let connection = card("Conexión", in: root)
@@ -1530,8 +1539,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsState.widthAnchor.constraint(equalTo: tools.widthAnchor).isActive = true
         if screenSlot == 0 {
             let local = card("MONITOR HDMI CON MÁS ESPACIO", in: root)
-            localResolution.addItems(withTitles: DisplayResolutionProfile.local.map { $0.title })
-            localResolution.selectItem(at: LocalVirtualDisplayPreferences().resolution)
+            localDisplay.target = self; localDisplay.action = #selector(localMonitorChanged)
+            localResolution.target = self; localResolution.action = #selector(localResolutionChanged)
             row("Monitor", localDisplay, in: local)
             row("Escritorio", localResolution, in: local)
             localRefresh.target = self; localRefresh.action = #selector(refreshLocalDisplays)
@@ -1542,7 +1551,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             localStatus.setContentCompressionResistancePriority(.required, for: .vertical)
             local.addArrangedSubview(localStatus)
             localStatus.widthAnchor.constraint(equalTo: local.widthAnchor).isActive = true
-            addText("Crea un escritorio virtual grande y hace que el monitor externo lo muestre reducido. No añade píxeles físicos; sí ofrece más espacio para ventanas. La pantalla del MacBook permanece disponible para detenerlo.", to: local)
+            addText("Crea un escritorio virtual más grande que la resolución del monitor (hasta 5K) y el monitor lo muestra reducido. No añade píxeles físicos: el texto se ve más pequeño, pero caben más ventanas. La pantalla del MacBook permanece disponible para detenerlo.", to: local)
             refreshLocalDisplays()
         }
         #else
@@ -1645,7 +1654,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.sessionHasImage = true; self?.rememberCurrentSession()
         } }
         engine.onOptionsApplied = { [weak self] options in DispatchQueue.main.async {
-            self?.settingsState.stringValue = "Aplicados · \(options.width) × \(options.height) · objetivo \(options.fps) FPS · hasta \(options.bitrate / 1_000_000) Mb/s"
+            let image = options.videoWidth == options.width ? "" : " · imagen \(options.videoWidth) × \(options.videoHeight)"
+            self?.settingsState.stringValue = "Aplicados · escritorio \(options.width) × \(options.height)\(image) · objetivo \(options.fps) FPS · hasta \(options.bitrate / 1_000_000) Mb/s"
         } }
         #else
         engine.onSessionActive = { [weak self] in DispatchQueue.main.async {
@@ -2044,10 +2054,57 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     #if SENDER
     func selectedOptions() -> StreamOptions {
-        let profile = DisplayResolutionProfile.all[resolution.indexOfSelectedItem]
+        let profile = DisplayResolutionProfile.all.indices.contains(resolution.selectedTag()) ? DisplayResolutionProfile.all[resolution.selectedTag()] : DisplayResolutionProfile.all[0]
+        let video = StreamOutputProfile.all[max(0, output.indexOfSelectedItem)].size(forDesktopWidth: profile.width, height: profile.height)
         return StreamOptions(extend: mode.indexOfSelectedItem == 0, width: profile.width, height: profile.height,
             fps: fps.indexOfSelectedItem == 0 ? 60 : 30,
-            bitrate: VideoQualityProfile.all[quality.indexOfSelectedItem].ceiling, nativeCursor: cursorStyle.indexOfSelectedItem == 1)
+            bitrate: VideoQualityProfile.all[quality.indexOfSelectedItem].ceiling, nativeCursor: cursorStyle.indexOfSelectedItem == 1,
+            outputWidth: video.width, outputHeight: video.height)
+    }
+    // Grouped by shape, ordered by size; each item's tag is its stable preference index.
+    private func fillResolutionMenu() {
+        resolution.removeAllItems(); resolution.autoenablesItems = false
+        guard let menu = resolution.menu else { return }
+        var group = ""
+        for index in DisplayResolutionProfile.menuOrder {
+            let profile = DisplayResolutionProfile.all[index]
+            if profile.aspect != group {
+                if !group.isEmpty { let separator = NSMenuItem.separator(); separator.tag = -1; menu.addItem(separator) }
+                let header = NSMenuItem(title: profile.aspect == "16:9" ? "Panorámico 16:9 · monitores y TV" : "16:10 · pantallas de MacBook", action: nil, keyEquivalent: "")
+                header.isEnabled = false; header.tag = -1; menu.addItem(header); group = profile.aspect
+            }
+            let item = NSMenuItem(title: profile.title, action: nil, keyEquivalent: ""); item.tag = index; item.indentationLevel = 1; menu.addItem(item)
+        }
+    }
+    // Native pixel size of a physical monitor: its largest 1× mode.
+    private func nativeSize(_ id: CGDirectDisplayID) -> (Int, Int)? {
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []
+        guard let best = modes.filter({ $0.isUsableForDesktopGUI() }).max(by: { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }) else { return nil }
+        return (best.pixelWidth, best.pixelHeight)
+    }
+    private func updateLocalResolutions() {
+        let index = localDisplay.indexOfSelectedItem
+        let native = localDisplayIDs.indices.contains(index) ? nativeSize(localDisplayIDs[index]) : nil
+        localProfiles = native.map { DisplayResolutionProfile.local(nativeWidth: $0.0, nativeHeight: $0.1) } ?? DisplayResolutionProfile.local
+        localResolution.removeAllItems()
+        localResolution.addItems(withTitles: localProfiles.map { $0.title })
+        // Keep the saved size if this monitor offers it; otherwise twice the
+        // space (×2), the most legible large choice; else the largest.
+        let saved = LocalVirtualDisplayPreferences().size
+        let choice = localProfiles.firstIndex(where: { "\($0.width)x\($0.height)" == saved })
+            ?? native.flatMap { size in localProfiles.firstIndex(where: { $0.width == (size.0 * 2) & ~7 }) }
+            ?? localProfiles.count - 1
+        localResolution.selectItem(at: choice)
+        if let size = native, localVirtual == nil, !localProfiles.isEmpty {
+            localStatus.stringValue = "Monitor de \(size.0) × \(size.1). Elige cuánto espacio quieres: ×2 es el doble de ancho y alto."
+        }
+    }
+    @objc func localMonitorChanged() { updateLocalResolutions() }
+    @objc func localResolutionChanged() {
+        guard localProfiles.indices.contains(localResolution.indexOfSelectedItem) else { return }
+        let profile = localProfiles[localResolution.indexOfSelectedItem]
+        var saved = LocalVirtualDisplayPreferences(); saved.size = "\(profile.width)x\(profile.height)"; saved.save()
     }
     private func localDisplayName(_ id: CGDirectDisplayID, number: Int) -> String {
         if #available(macOS 10.15, *), let screen = NSScreen.screens.first(where: {
@@ -2095,6 +2152,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for (index, id) in ids.enumerated() { localDisplay.addItem(withTitle: localDisplayName(id, number: index)) }
         if ids.indices.contains(previous) { localDisplay.selectItem(at: previous) }
         let active = localVirtual != nil
+        if !active { updateLocalResolutions() }
         localDisplay.isEnabled = !active && !ids.isEmpty
         localResolution.isEnabled = !active
         localRefresh.isEnabled = !active
@@ -2108,14 +2166,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func startLocalVirtualDisplay() {
         refreshLocalDisplays()
-        guard localVirtual == nil, localDisplayIDs.indices.contains(localDisplay.indexOfSelectedItem), DisplayResolutionProfile.local.indices.contains(localResolution.indexOfSelectedItem) else { return }
+        guard localVirtual == nil, localDisplayIDs.indices.contains(localDisplay.indexOfSelectedItem), localProfiles.indices.contains(localResolution.indexOfSelectedItem) else { return }
         let target = localDisplayIDs[localDisplay.indexOfSelectedItem]
         guard target != CGMainDisplayID(), CGDisplayIsOnline(target) != 0, CGDisplayMirrorsDisplay(target) == kCGNullDirectDisplay else {
             localStatus.stringValue = "El monitor debe estar conectado como pantalla ampliada y no puede ser la pantalla principal."
             refreshLocalDisplays(); return
         }
-        let profile = DisplayResolutionProfile.local[localResolution.indexOfSelectedItem]
-        var saved = LocalVirtualDisplayPreferences(); saved.resolution = localResolution.indexOfSelectedItem; saved.save()
+        let profile = localProfiles[localResolution.indexOfSelectedItem]
+        var saved = LocalVirtualDisplayPreferences(); saved.size = "\(profile.width)x\(profile.height)"; saved.save()
         localStart.isEnabled = false; localStatus.stringValue = "Creando escritorio virtual \(profile.width) × \(profile.height)…"
         let origin = CGDisplayBounds(target).origin
         // MacBook Air counts independent external desktops. Temporarily mirror
@@ -2134,7 +2192,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard waitForLocalDisplay(virtual.displayID, width: profile.width, height: profile.height) else {
             virtual.destroy(); _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
-            localStatus.stringValue = "macOS no activó el tamaño virtual elegido. Prueba 3200 × 1800."
+            localStatus.stringValue = "macOS no activó el tamaño virtual elegido. Prueba un tamaño menor."
             refreshLocalDisplays(); return
         }
         guard configureLocalMonitor(target, mirrorOf: virtual.displayID) else {
@@ -2170,7 +2228,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func settingsChanged() {
         var saved = DisplayPreferences(screenSlot: screenSlot); saved.mode = mode.indexOfSelectedItem
-        saved.resolution = resolution.indexOfSelectedItem; saved.fps = fps.indexOfSelectedItem; saved.quality = quality.indexOfSelectedItem; saved.cursor = cursorStyle.indexOfSelectedItem
+        saved.resolution = max(0, resolution.selectedTag()); saved.fps = fps.indexOfSelectedItem; saved.quality = quality.indexOfSelectedItem; saved.cursor = cursorStyle.indexOfSelectedItem; saved.output = output.indexOfSelectedItem
         saved.save(screenSlot: screenSlot)
         settingsState.stringValue = currentPhase == .streaming || currentPhase == .applying ? "Aplicando los ajustes seleccionados…" : "Ajustes guardados · se aplicarán al conectar"
         engine.update(options: selectedOptions())

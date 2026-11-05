@@ -58,8 +58,9 @@ for selected in 0..<2 {
     controller.cursorStyle.selectItem(at: selected)
     check(controller.selectedOptions().nativeCursor == (selected == 1), "cursor menu maps to embedded/independent cursor")
 }
-check(controller.resolution.numberOfItems == 3, "remote resolution menu preserves its compatible profiles")
-check(controller.localResolution.numberOfItems == 3, "local HDMI menu exposes three high-resolution virtual profiles")
+check(controller.resolution.itemArray.filter { $0.tag >= 0 }.count == DisplayResolutionProfile.all.count, "remote resolution menu lists every desktop size")
+check(controller.resolution.selectedTag() >= 0, "remote resolution menu selects a size, not a group header")
+check(controller.localResolution.numberOfItems >= 4, "local HDMI menu exposes several larger virtual desktops")
 controller.localResolution.selectItem(at: 2)
 check(DisplayResolutionProfile.local[controller.localResolution.indexOfSelectedItem].width == 3840, "local HDMI 4K choice maps to a 3840x2160 virtual desktop")
 controller.mode.selectItem(at: 0);controller.fps.selectItem(at: 0);controller.cursorStyle.selectItem(at: 0);controller.quality.selectItem(at: 2)

@@ -1,3 +1,10 @@
+## 0.4.24 · Más resolución que la pantalla, por HDMI y por Wi-Fi
+- Corregido: macOS activaba 1920 × 1080 en las pantallas virtuales aunque se pidiera 2560 × 1440 o 4K. Ahora se selecciona el modo exacto (y se crea en 0,5 s en lugar de esperar 6 s).
+- Monitor HDMI: escritorios de 2560 × 1440 a 5120 × 2880 (5K) mostrados reducidos en el monitor; sin la superficie 2× oculta, que cuadruplicaba el trabajo sin ganar nitidez.
+- Wi-Fi: escritorio de hasta 3840 × 2160 y nuevo ajuste «Imagen enviada» para mandar el escritorio grande reducido (automática hasta 2560 × 1440, máxima, 1080p o 720p).
+- Rendimiento: menos copias y sin volver a analizar cada fotograma en la cola de ratón y teclado.
+- Protocolo sin cambios; ambos Mac deben tener la misma versión.
+
 ## 0.4.23 · Pantalla virtual 4K y monitor HDMI
 - Resolución virtual 3840 × 2160 añadida sin cambiar las tres opciones anteriores ni sus preferencias guardadas.
 - Un monitor HDMI ampliado puede mostrar un escritorio virtual de 2560 × 1440, 3200 × 1800 o 3840 × 2160, reducido al panel físico.
