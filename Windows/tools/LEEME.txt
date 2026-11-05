@@ -1,0 +1,11 @@
+PRISON DISPLAY - Preparar la prueba en Windows
+Version de esta herramienta: 0.1.0-dev
+
+1. Pasa este ZIP a la torre y extraelo en una carpeta.
+2. Abre Comprobar-Windows.cmd con doble clic, sin usar Ejecutar como administrador.
+3. Se creara PRISON-DISPLAY-DIAGNOSTICO.txt en el Escritorio.
+4. Envia en el chat el contenido del informe, o indica la version de Windows y el nombre de la grafica.
+
+Solo consulta version de Windows, grafica, direccion local y si existe SSH. No activa acceso remoto, instala servicios, abre puertos ni cambia permisos o politicas. El informe puede incluir el nombre del equipo y su IP privada. No incluye contrasenas ni claves de Wi-Fi, y no se envia a ningun servidor.
+
+Esto es una herramienta de comprobacion, no la app ni su instalador. Si Windows bloquea su apertura, comunica el aviso; no desactives protecciones.
