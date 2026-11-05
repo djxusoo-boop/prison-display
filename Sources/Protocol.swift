@@ -21,7 +21,8 @@ enum Wire {
         guard data.isEmpty else { throw AireError("Orden de pantalla completa inválida.") }
     }
     static func packet(_ kind: Kind, _ body: Data = Data()) -> Data {
-        var d = Data(); d.u32(UInt32(body.count + 1)); d.append(kind.rawValue); d.append(body); return d
+        var d = Data(); d.reserveCapacity(body.count + 5)
+        d.u32(UInt32(body.count + 1)); d.append(kind.rawValue); d.append(body); return d
     }
     static func hello(role: String, name: String = Host.current().localizedName ?? "Este Mac") -> Data {
         let label = normalizedPeerName(name) ?? "Este Mac"
@@ -57,30 +58,50 @@ extension Data {
     mutating func u32(_ v: UInt32) { for s in stride(from: 24, through: 0, by: -8) { append(UInt8((v >> s) & 255)) } }
     mutating func u64(_ v: UInt64) { for s in stride(from: 56, through: 0, by: -8) { append(UInt8((v >> s) & 255)) } }
 }
+// Reads big-endian fields without copying the whole input. Every returned
+// Data is zero-based, so callers can keep indexing with data[0].
 struct Reader {
-    private let data: Data; private var offset = 0
-    init(_ data: Data) { self.data = Data(data) }
+    private let data: Data; private var offset: Int
+    init(_ data: Data) { self.data = data; offset = data.startIndex }
+    var remaining: Int { data.endIndex - offset }
     mutating func bytes(_ count: Int) throws -> Data {
-        guard count >= 0, count <= data.count - offset else { throw AireError("Paquete incompleto.") }
+        guard count >= 0, count <= remaining else { throw AireError("Paquete incompleto.") }
         defer { offset += count }; return data.subdata(in: offset..<(offset + count))
     }
-    mutating func u16() throws -> UInt16 { try bytes(2).reduce(UInt16(0)) { ($0 << 8) | UInt16($1) } }
-    mutating func u32() throws -> UInt32 { try bytes(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) } }
-    mutating func u64() throws -> UInt64 { try bytes(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) } }
-    mutating func rest() throws -> Data { try bytes(data.count - offset) }
+    mutating func skip(_ count: Int) throws {
+        guard count >= 0, count <= remaining else { throw AireError("Paquete incompleto.") }
+        offset += count
+    }
+    private mutating func integer<T: FixedWidthInteger>(_ type: T.Type) throws -> T {
+        let size = MemoryLayout<T>.size
+        guard size <= remaining else { throw AireError("Paquete incompleto.") }
+        var value: T = 0
+        for index in offset..<(offset + size) { value = (value << 8) | T(data[index]) }
+        offset += size; return value
+    }
+    mutating func u16() throws -> UInt16 { try integer(UInt16.self) }
+    mutating func u32() throws -> UInt32 { try integer(UInt32.self) }
+    mutating func u64() throws -> UInt64 { try integer(UInt64.self) }
+    mutating func rest() throws -> Data { try bytes(remaining) }
 }
+// Keeps a read offset instead of copying the unread tail after every packet.
+// The consumed prefix is discarded once per feed, not once per packet.
 struct PacketParser {
     private var buffer = Data()
+    private var start = 0
     mutating func feed(_ data: Data) throws -> [(Wire.Kind, Data)] {
+        if start > 0 { buffer.removeSubrange(0..<start); start = 0 }
         buffer.append(data); var packets: [(Wire.Kind, Data)] = []
-        while buffer.count >= 4 {
-            var r = Reader(buffer.prefix(4)); let length = Int(try r.u32())
+        while buffer.count - start >= 4 {
+            var length = 0
+            for index in start..<(start + 4) { length = (length << 8) | Int(buffer[index]) }
             guard length >= 1, length <= Wire.maxPacket else { throw AireError("Tamaño de paquete inválido.") }
-            guard buffer.count >= length + 4 else { break }
-            guard let kind = Wire.Kind(rawValue: buffer[buffer.startIndex + 4]) else { throw AireError("Tipo de paquete desconocido.") }
-            packets.append((kind, Data(buffer.dropFirst(5).prefix(length - 1))))
-            buffer = Data(buffer.dropFirst(length + 4))
+            guard buffer.count - start >= length + 4 else { break }
+            guard let kind = Wire.Kind(rawValue: buffer[start + 4]) else { throw AireError("Tipo de paquete desconocido.") }
+            packets.append((kind, buffer.subdata(in: (start + 5)..<(start + 4 + length))))
+            start += length + 4
         }
+        if start == buffer.count { buffer.removeAll(keepingCapacity: true); start = 0 }
         return packets
     }
 }
@@ -315,7 +336,7 @@ final class Peer {
         })
     }
     private func receive() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, done, error in
             guard let self = self, !self.ended else { return }
             do {
                 if let data = data, !data.isEmpty {

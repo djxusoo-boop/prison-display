@@ -750,7 +750,9 @@ final class SenderEngine {
                             guard let self = self, self.active, self.generation == token else { return }
                             self.encoding = max(0, self.encoding-1)
                             do {
-                                let frame = try VideoFrame(data)
+                                // The encoder produced and validated this frame; avoid re-parsing
+                                // it on the queue that also handles input and acknowledgements.
+                                let frame = try VideoFrame.header(data)
                                 try self.window.sent(sequence: frame.sequence, timestamp: frame.timestamp)
                                 self.lastSequence = frame.sequence
                                 self.videoBytes += data.count

@@ -9,8 +9,14 @@ struct VideoFrame {
     let sps: Data
     let pps: Data
     let avcc: Data
+    static let headerSize = 16
+    // The sender only needs these two fields after encoding its own frame.
+    static func header(_ data: Data) throws -> (sequence: UInt64, timestamp: UInt64) {
+        var r = Reader(data); return (try r.u64(), try r.u64())
+    }
     func serialize() -> Data {
-        var d = Data(); d.u64(sequence); d.u64(timestamp)
+        var d = Data(); d.reserveCapacity(Self.headerSize + 4 + sps.count + pps.count + avcc.count)
+        d.u64(sequence); d.u64(timestamp)
         d.u16(UInt16(sps.count)); d.append(sps); d.u16(UInt16(pps.count)); d.append(pps); d.append(avcc); return d
     }
     init(sequence: UInt64, timestamp: UInt64, sps: Data, pps: Data, avcc: Data) {
@@ -20,11 +26,12 @@ struct VideoFrame {
         var r = Reader(data); sequence = try r.u64(); timestamp = try r.u64()
         sps = try r.bytes(Int(r.u16())); pps = try r.bytes(Int(r.u16())); avcc = try r.rest()
         guard !sps.isEmpty, !pps.isEmpty, sps.count <= 4096, pps.count <= 4096, !avcc.isEmpty else { throw AireError("Cabecera de vídeo inválida.") }
-        var nal = Reader(avcc); var remaining = avcc.count
-        while remaining > 0 {
-            let size = Int(try nal.u32()); remaining -= 4
-            guard size > 0, size <= remaining else { throw AireError("Bloque H.264 inválido.") }
-            _ = try nal.bytes(size); remaining -= size
+        // Validate NAL lengths in place; copying each unit cost a frame-sized copy.
+        var nal = Reader(avcc)
+        while nal.remaining > 0 {
+            let size = Int(try nal.u32())
+            guard size > 0, size <= nal.remaining else { throw AireError("Bloque H.264 inválido.") }
+            try nal.skip(size)
         }
     }
 }
@@ -199,13 +206,12 @@ final class H264Encoder {
 final class H264Decoder {
     private var session: VTDecompressionSession?
     private var format: CMVideoFormatDescription?
-    private var parameters = Data()
+    private var parameterSPS = Data(), parameterPPS = Data()
     var onPixel: ((CVPixelBuffer) -> Void)?
     var hardware = false
     private var callbackError: OSStatus = noErr
     func decode(_ frame: VideoFrame) throws {
-        var combined = Data(); combined.u16(UInt16(frame.sps.count)); combined.append(frame.sps); combined.append(frame.pps)
-        if combined != parameters { try configure(frame); parameters = combined }
+        if frame.sps != parameterSPS || frame.pps != parameterPPS { try configure(frame); parameterSPS = frame.sps; parameterPPS = frame.pps }
         guard let format = format, let session = session else { throw AireError("Decodificador no disponible.") }
         var block: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: frame.avcc.count, blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0, dataLength: frame.avcc.count, flags: 0, blockBufferOut: &block)
@@ -243,6 +249,6 @@ final class H264Decoder {
         var value: Unmanaged<CFTypeRef>?; VTSessionCopyProperty(session, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, allocator: nil, valueOut: &value)
         hardware = (value?.takeRetainedValue() as? NSNumber)?.boolValue == true
     }
-    func stop() { if let s = session { VTDecompressionSessionInvalidate(s) }; session = nil; format = nil; parameters = Data() }
+    func stop() { if let s = session { VTDecompressionSessionInvalidate(s) }; session = nil; format = nil; parameterSPS = Data(); parameterPPS = Data() }
     deinit { stop() }
 }
