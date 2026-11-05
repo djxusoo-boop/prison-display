@@ -30,6 +30,8 @@ if [[ "${1:-}" == --receiver-only ]]; then
     print 'RESULT: receiver components only; sender and physical display checks remain pending'
     exit 0
 fi
+xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D UNIFIED Sources/Protocol.swift Sources/Pointer.swift Sources/DesktopControl.swift build/Version.swift Tests/Continuous/main.swift -o build/ContinuousTests
+build/ContinuousTests
 /bin/zsh Tests/Presentation/run.sh
 /bin/zsh Tests/Safety/Sender/run.sh
 xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/Live/main.swift -o build/LiveTests

@@ -171,16 +171,21 @@ struct ReceiverPreferences: Equatable {
     var keyboard: Bool
     var crossing: Bool
     var edge: Int
+    var continuous: Bool
     init(defaults: UserDefaults = .standard) {
         mouse = defaults.object(forKey: "PrisonDisplay.input.mouse") as? Bool ?? true
-        keyboard = defaults.bool(forKey: "PrisonDisplay.input.keyboard")
+        // 0.4.24: the keyboard follows the click by default. Earlier versions
+        // started with it off, so typing after clicking the image did nothing.
+        keyboard = defaults.object(forKey: "PrisonDisplay.input.keyboard.v2") as? Bool ?? true
+        continuous = defaults.object(forKey: "PrisonDisplay.input.continuous") as? Bool ?? true
         crossing = defaults.bool(forKey: "PrisonDisplay.input.crossing")
         let stored = defaults.integer(forKey: "desktopEdge")
         edge = (0..<4).contains(stored) ? stored : 0
     }
     func save(defaults: UserDefaults = .standard) {
         defaults.set(mouse, forKey: "PrisonDisplay.input.mouse")
-        defaults.set(keyboard, forKey: "PrisonDisplay.input.keyboard")
+        defaults.set(keyboard, forKey: "PrisonDisplay.input.keyboard.v2")
+        defaults.set(continuous, forKey: "PrisonDisplay.input.continuous")
         defaults.set(crossing, forKey: "PrisonDisplay.input.crossing")
         defaults.set(edge, forKey: "desktopEdge")
     }

@@ -3,7 +3,11 @@
 - Monitor HDMI: escritorios de 2560 × 1440 a 5120 × 2880 (5K) mostrados reducidos en el monitor; sin la superficie 2× oculta, que cuadruplicaba el trabajo sin ganar nitidez.
 - Wi-Fi: escritorio de hasta 3840 × 2160 y nuevo ajuste «Imagen enviada» para mandar el escritorio grande reducido (automática hasta 2560 × 1440, máxima, 1080p o 720p).
 - Rendimiento: menos copias y sin volver a analizar cada fotograma en la cola de ratón y teclado.
-- Protocolo sin cambios; ambos Mac deben tener la misma versión.
+- Ratón continuo: desde el visor del iMac o del Pro, empuja el ratón contra el borde y mueve el cursor real del Air por todas sus pantallas (la suya y la del otro receptor). Al volver a su pantalla, el control regresa al visor en el mismo punto. ⌃⌥Esc vuelve al instante.
+- El teclado sigue al clic y viene activado por defecto en los receptores.
+- Botón central del ratón transmitido; arrastrar para seleccionar funciona también en modo continuo.
+- El Air informa a cada receptor de qué bordes continúan en otra pantalla.
+- Protocolo revisión 11: los tres Mac deben tener la misma versión.
 
 ## 0.4.23 · Pantalla virtual 4K y monitor HDMI
 - Resolución virtual 3840 × 2160 añadida sin cambiar las tres opciones anteriores ni sus preferencias guardadas.

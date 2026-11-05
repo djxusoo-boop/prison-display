@@ -21,7 +21,10 @@ final class DesktopInputOwnership {
 
 // A separate, authenticated lease prevents stale input from changing displays.
 struct DesktopControlMessage {
-    enum Action: UInt8 { case begin, end, heartbeat, accepted, rejected }
+    // beginGlobal: control the sending Mac's whole desktop (all displays) from a
+    // receiver's viewer. returned: its cursor came back onto that viewer's
+    // display; width/height carry the position as x, y in 0...65535.
+    enum Action: UInt8 { case begin, end, heartbeat, accepted, rejected, beginGlobal, returned }
     let action: Action
     let token: UInt64
     var width: UInt32 = 0
@@ -32,9 +35,20 @@ struct DesktopControlMessage {
     init(_ data: Data) throws {
         guard data.count == 17, let action = Action(rawValue: data.first!) else { throw AireError("Control de escritorio inválido.") }
         var r = Reader(data.dropFirst()); token = try r.u64(); width = try r.u32(); height = try r.u32(); self.action = action
-        guard token != 0, action == .accepted ? ((4...32768).contains(width) && (4...32768).contains(height)) : (width == 0 && height == 0) else { throw AireError("Control de escritorio inválido.") }
+        let sizes: Bool
+        switch action {
+        case .accepted: sizes = (4...32768).contains(width) && (4...32768).contains(height)
+        case .returned: sizes = width <= 65535 && height <= 65535
+        default: sizes = width == 0 && height == 0
+        }
+        guard token != 0, sizes else { throw AireError("Control de escritorio inválido.") }
     }
     func serialize() -> Data { var d = Data([action.rawValue]); d.u64(token); d.u32(width); d.u32(height); return d }
+    static func returned(token: UInt64, x: Double, y: Double) -> DesktopControlMessage {
+        func fixed(_ v: Double) -> UInt32 { UInt32((min(1, max(0, v.isFinite ? v : 0.5)) * 65535).rounded()) }
+        return DesktopControlMessage(action: .returned, token: token, width: fixed(x), height: fixed(y))
+    }
+    var returnedPoint: CGPoint { CGPoint(x: Double(width) / 65535, y: Double(height) / 65535) }
 }
 
 enum DesktopEdge: Int, CaseIterable {
@@ -95,6 +109,103 @@ final class LocalCursorLease {
     }
     deinit { release() }
 }
+// One mouse for the whole sending Mac. Pushing past the edge of the viewer
+// (toward another display of that Mac) hands the local mouse to the sending
+// Mac's real cursor, which then travels across all of its displays, including
+// the other receiver. Coming back onto this viewer's display returns to normal
+// absolute control. The keyboard follows: it types wherever you click.
+// Main thread only; tests replace every system side effect.
+final class ContinuousPointer {
+    enum State: Equatable { case idle, requesting, active }
+    var enabled = true { didSet { if !enabled { leave() } } }
+    var edges: UInt8 = 0
+    var sendControl: (DesktopControlMessage) -> Void = { _ in }
+    var sendPointer: (PointerMessage) -> Void = { _ in }
+    var sendKeyboard: (KeyboardMessage) -> Void = { _ in }
+    // Normalized point on this viewer's display (nil: keep the cursor where it is).
+    var warp: (CGPoint?) -> Void = { _ in }
+    var onChanged: (Bool) -> Void = { _ in }
+    var onStatus: (String) -> Void = { _ in }
+    var now: () -> UInt64 = { monotonicNS() }
+    let cursor = LocalCursorLease()
+    private(set) var state = State.idle
+    private(set) var token: UInt64 = 0
+    private var started: UInt64 = 0
+    private var received: UInt64 = 0
+    private var cooldown: UInt64 = 0
+    private var held = Set<PointerMessage.Action>()
+    var isActive: Bool { state == .active }
+    // Returns true when the push starts a crossing (the event is consumed).
+    @discardableResult func push(edgeIndex: Int) -> Bool {
+        guard enabled, state == .idle, now() >= cooldown, ScreenEdges.contains(edges, edgeIndex: edgeIndex) else { return false }
+        token = max(token &+ 1, now()); started = now(); received = now(); state = .requesting
+        sendControl(DesktopControlMessage(action: .beginGlobal, token: token))
+        return true
+    }
+    func reply(_ message: DesktopControlMessage) {
+        guard message.token == token, state != .idle else { return }
+        switch message.action {
+        case .accepted:
+            received = now()
+            guard state == .requesting else { return }
+            guard cursor.acquire() else { leave(); onStatus("macOS no permitió soltar el cursor local. Sigues en esta pantalla."); return }
+            state = .active; onChanged(true)
+            onStatus("Ratón continuo · moviendo el cursor del Mac que envía por todas sus pantallas. ⌃⌥Esc vuelve aquí.")
+        case .rejected: leave(remoteEnded: true); onStatus("El Mac que envía no aceptó el ratón continuo. Comprueba que permite el ratón compartido.")
+        case .returned: leave(warpTo: message.returnedPoint, remoteEnded: true)
+        default: break
+        }
+    }
+    func move(dx: Double, dy: Double) {
+        guard state == .active, dx.isFinite, dy.isFinite else { return }
+        var x = dx, y = dy
+        repeat {
+            let stepX = max(-120, min(120, x)), stepY = max(-120, min(120, y))
+            sendPointer(PointerMessage(action: .moveBy, x: 0, y: 0, delta: stepY, deltaX: stepX))
+            x -= stepX; y -= stepY
+        } while abs(x) > 0.001 || abs(y) > 0.001
+    }
+    func button(_ action: PointerMessage.Action, clicks: Int = 1, flags: UInt64 = 0) {
+        guard state == .active else { return }
+        switch action {
+        case .leftDown, .rightDown, .middleDown: held.insert(action)
+        case .leftUp: held.remove(.leftDown)
+        case .rightUp: held.remove(.rightDown)
+        case .middleUp: held.remove(.middleDown)
+        default: return
+        }
+        sendPointer(PointerMessage(action: action, x: 0, y: 0, clicks: max(1, min(3, clicks)), flags: flags))
+    }
+    func scroll(dy: Double, dx: Double, flags: UInt64 = 0) {
+        guard state == .active, dy.isFinite, dx.isFinite else { return }
+        sendPointer(PointerMessage(action: .scroll, x: 0, y: 0, delta: max(-120, min(120, dy)), deltaX: max(-120, min(120, dx)), flags: flags))
+    }
+    func tick() {
+        switch state {
+        case .idle: if cursor.detached { cursor.release() }
+        case .requesting: if now() - started > 1_000_000_000 { leave(); onStatus("El Mac que envía no respondió. Sigues en esta pantalla.") }
+        case .active:
+            if now() - received > 2_500_000_000 { leave(); onStatus("El Mac que envía dejó de responder. Control devuelto a esta pantalla."); return }
+            sendControl(DesktopControlMessage(action: .heartbeat, token: token))
+        }
+    }
+    // remoteEnded: the sending Mac already closed the lease and released its
+    // buttons/keys; untagged releases would land on the streamed display.
+    func leave(warpTo point: CGPoint? = nil, remoteEnded: Bool = false) {
+        let was = state
+        guard was != .idle else { return }
+        state = .idle; cooldown = now() + 400_000_000
+        if was == .active && !remoteEnded {
+            for action in held { sendPointer(PointerMessage(action: action == .leftDown ? .leftUp : (action == .rightDown ? .rightUp : .middleUp), x: 0, y: 0)) }
+            sendKeyboard(KeyboardMessage(action: .releaseAll))
+        }
+        held.removeAll()
+        sendControl(DesktopControlMessage(action: .end, token: token))
+        cursor.release()
+        if was == .active { warp(point); onChanged(false) }
+    }
+}
+
 // Runs only on the main run loop, opt-in, and only suppresses input after ACK.
 // Idle events never leave the iMac. Tests replace all system side effects.
 final class DesktopBridge {

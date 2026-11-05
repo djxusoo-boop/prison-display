@@ -168,11 +168,43 @@ final class VideoView: NSView {
     private var localInputUntil: UInt64 = 0
     private var heldLeft = false
     private var heldRight = false
+    private var heldMiddle = false
     private var lastPointer = CGPoint(x: 0.5, y: 0.5)
+    // Pushing the mouse against a screen edge that continues onto another
+    // display of the sending Mac. Returns true when the push was consumed.
+    var onEdgePush: ((Int) -> Bool)?
     func releaseLocalButtons() {
         if heldLeft { onPointer?(PointerMessage(action: .leftUp, x: Double(lastPointer.x), y: Double(lastPointer.y))) }
         if heldRight { onPointer?(PointerMessage(action: .rightUp, x: Double(lastPointer.x), y: Double(lastPointer.y))) }
-        heldLeft = false; heldRight = false
+        if heldMiddle { onPointer?(PointerMessage(action: .middleUp, x: Double(lastPointer.x), y: Double(lastPointer.y))) }
+        heldLeft = false; heldRight = false; heldMiddle = false
+    }
+    // The keyboard follows the pointer when it travels to another screen.
+    func focusKeyboard() { keyboardFocused = hasImage; window?.makeFirstResponder(self) }
+    // Edge of the screen being pushed, only while the image fills that edge.
+    func pushedEdge(_ event: NSEvent) -> Int? {
+        guard mouseEnabled, hasImage, !heldLeft, !heldRight, !heldMiddle, let window = window, let screen = window.screen else { return nil }
+        let frame = screen.frame
+        guard window.frame.insetBy(dx: -1, dy: -1).contains(frame) else { return nil }
+        let visible = imageRect.intersection(bounds)
+        guard !visible.isEmpty else { return nil }
+        let image = window.convertToScreen(convert(visible, to: nil))
+        let mouse = NSEvent.mouseLocation
+        if mouse.x >= frame.maxX - 1.5, event.deltaX > 0, image.maxX >= frame.maxX - 2 { return DesktopEdge.right.rawValue }
+        if mouse.x <= frame.minX + 1.5, event.deltaX < 0, image.minX <= frame.minX + 2 { return DesktopEdge.left.rawValue }
+        if mouse.y >= frame.maxY - 1.5, event.deltaY < 0, image.maxY >= frame.maxY - 2 { return DesktopEdge.above.rawValue }
+        if mouse.y <= frame.minY + 1.5, event.deltaY > 0, image.minY <= frame.minY + 2 { return DesktopEdge.below.rawValue }
+        return nil
+    }
+    // Global (Quartz) position of a normalized point of the received image.
+    func globalPoint(normalized point: CGPoint) -> CGPoint? {
+        guard let window = window, imageRect.width > 0, imageRect.height > 0 else { return nil }
+        let r = imageRect, inside = r.intersection(bounds).insetBy(dx: 3, dy: 3)
+        guard !inside.isEmpty else { return nil }
+        let local = CGPoint(x: min(max(r.minX + point.x * r.width, inside.minX), inside.maxX),
+                            y: min(max(r.maxY - point.y * r.height, inside.minY), inside.maxY))
+        let screen = window.convertPoint(toScreen: convert(local, to: nil))
+        return CGPoint(x: screen.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - screen.y)
     }
     private var tracking: NSTrackingArea?
     var onPointer: ((PointerMessage) -> Void)?
@@ -234,11 +266,12 @@ final class VideoView: NSView {
         cursorLayer.frame = CGRect(x: r.minX + position.x*r.width, y: r.maxY - position.y*r.height - 24, width: 24, height: 24)
     }
     private func sendPointer(_ event: NSEvent, action: PointerMessage.Action) {
+        if action == .move, let edge = pushedEdge(event), onEdgePush?(edge) == true { return }
         guard mouseEnabled, hasImage else { return }
         let r = imageRect, visibleRect = r.intersection(bounds)
         guard !visibleRect.isEmpty else { return }
         var point = convert(event.locationInWindow, from: nil)
-        let release = action == .leftUp || action == .rightUp
+        let release = action == .leftUp || action == .rightUp || action == .middleUp
         if release { point.x = min(max(point.x, visibleRect.minX), visibleRect.maxX-0.001); point.y = min(max(point.y, visibleRect.minY), visibleRect.maxY-0.001) }
         guard visibleRect.contains(point) else { return }
         guard let normalized = PointerMessage.normalized(point, in: r) else { return }
@@ -246,7 +279,8 @@ final class VideoView: NSView {
         localInputUntil = monotonicNS() + 500_000_000
         if action == .leftDown { heldLeft = true }; if action == .leftUp { heldLeft = false }
         if action == .rightDown { heldRight = true }; if action == .rightUp { heldRight = false }
-        onPointer?(PointerMessage(action: action, x: Double(normalized.x), y: Double(1-normalized.y), delta: action == .scroll ? max(-120, min(120, event.scrollingDeltaY)) : 0, clicks: (action == .leftDown || action == .rightDown || action == .leftUp || action == .rightUp) ? max(1, min(3, event.clickCount)) : 1, deltaX: action == .scroll ? max(-120, min(120, event.scrollingDeltaX)) : 0, flags: keyboardEnabled ? UInt64(event.modifierFlags.rawValue) : 0))
+        if action == .middleDown { heldMiddle = true }; if action == .middleUp { heldMiddle = false }
+        onPointer?(PointerMessage(action: action, x: Double(normalized.x), y: Double(1-normalized.y), delta: action == .scroll ? max(-120, min(120, event.scrollingDeltaY)) : 0, clicks: [.leftDown, .rightDown, .middleDown, .leftUp, .rightUp, .middleUp].contains(action) ? max(1, min(3, event.clickCount)) : 1, deltaX: action == .scroll ? max(-120, min(120, event.scrollingDeltaX)) : 0, flags: keyboardEnabled ? UInt64(event.modifierFlags.rawValue) : 0))
         layoutCursor()
     }
     override func mouseMoved(with event: NSEvent) { sendPointer(event, action: .move) }
@@ -257,6 +291,9 @@ final class VideoView: NSView {
     override func rightMouseDown(with event: NSEvent) { window?.makeFirstResponder(self); keyboardFocused = hasImage && imageRect.intersection(bounds).contains(convert(event.locationInWindow, from: nil)); sendPointer(event, action: .rightDown) }
     override func rightMouseUp(with event: NSEvent) { sendPointer(event, action: .rightUp) }
     override func scrollWheel(with event: NSEvent) { sendPointer(event, action: .scroll) }
+    override func otherMouseDown(with event: NSEvent) { if event.buttonNumber == 2 { sendPointer(event, action: .middleDown) } else { super.otherMouseDown(with: event) } }
+    override func otherMouseUp(with event: NSEvent) { if event.buttonNumber == 2 { sendPointer(event, action: .middleUp) } else { super.otherMouseUp(with: event) } }
+    override func otherMouseDragged(with event: NSEvent) { sendPointer(event, action: .move) }
     override func mouseExited(with event: NSEvent) { layoutCursor() }
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect); wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor; layer?.masksToBounds = true
@@ -390,13 +427,55 @@ final class SenderEngine {
     private let desktopOwner = UUID()
     private var desktopToken: UInt64?
     private var desktopExpiry: DispatchWorkItem?
+    // Continuous mode bookkeeping: the cursor must leave the streamed display
+    // before reaching it again ends the lease and hands control back.
+    private var globalLeft = false
+    private var globalBlocked = 0
     private func endDesktopControl() {
         desktopExpiry?.cancel(); desktopExpiry = nil; desktopToken = nil
         DesktopInputOwnership.shared.release(desktopOwner)
-        pointer.releaseButtons(); keyboard.releaseKeys(); pointer.desktopDisplayID = nil
+        pointer.releaseButtons(); keyboard.releaseKeys(); pointer.desktopDisplayID = nil; pointer.globalMode = false
+        globalLeft = false; globalBlocked = 0
     }
+    private func followGlobalCursor(reply: @escaping (Wire.Kind, Data) -> Void) {
+        guard pointer.globalMode, let token = desktopToken else { return }
+        let display = DisplayGeometry.shared.bounds(pointer.displayID)
+        guard !display.isEmpty else { return }
+        if !display.contains(pointer.position) { globalLeft = true; globalBlocked = 0; return }
+        // Back on this viewer's display, or pushing against an edge that has
+        // no display beyond it: hand the mouse back instead of trapping it.
+        if pointer.lastMoveBlocked { globalBlocked += 1 }
+        guard globalLeft || globalBlocked >= 2 else { return }
+        let x = Double((pointer.position.x - display.minX) / max(1, display.width - 1))
+        let y = Double((pointer.position.y - display.minY) / max(1, display.height - 1))
+        endDesktopControl()
+        reply(.desktopControl, DesktopControlMessage.returned(token: token, x: x, y: y).serialize())
+    }
+    private var lastScreenEdges: UInt8?
+    private var edgesTimer: DispatchSourceTimer?
+    // Tell the receiver which edges of its display continue onto another one.
+    private func startScreenEdges() {
+        edgesTimer?.cancel(); lastScreenEdges = nil
+        let session = generation
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: 1, leeway: .milliseconds(200))
+        timer.setEventHandler { [weak self] in
+            guard let self = self, self.generation == session, self.authenticated else { return }
+            let display = self.pointer.displayID, displays = self.pointer.displays
+            self.displayQueue.async { [weak self] in
+                let bounds = DisplayGeometry.shared.bounds(display)
+                let mask = display == 0 || bounds.isEmpty ? 0 : ScreenEdges.mask(of: bounds, among: displays())
+                self?.queue.async {
+                    guard let self = self, self.generation == session, self.lastScreenEdges != mask else { return }
+                    self.lastScreenEdges = mask; self.peer?.send(.screenEdges, Data([mask]))
+                }
+            }
+        }
+        edgesTimer = timer; timer.resume()
+    }
+    private func stopScreenEdges() { edgesTimer?.cancel(); edgesTimer = nil; lastScreenEdges = nil }
     private func desktopControl(_ message: DesktopControlMessage, reply: @escaping (Wire.Kind, Data) -> Void) throws {
-        guard [.begin, .end, .heartbeat].contains(message.action) else { throw AireError("Control de escritorio inesperado.") }
+        guard [.begin, .beginGlobal, .end, .heartbeat].contains(message.action) else { throw AireError("Control de escritorio inesperado.") }
         if message.action == .end { if desktopToken == message.token { endDesktopControl() }; return }
         if message.action == .heartbeat, desktopToken != message.token {
             reply(.desktopControl, DesktopControlMessage(action: .rejected, token: message.token).serialize()); return
@@ -405,12 +484,13 @@ final class SenderEngine {
             if desktopToken == message.token { endDesktopControl() }
             reply(.desktopControl, DesktopControlMessage(action: .rejected, token: message.token).serialize()); return
         }
-        if message.action == .begin {
+        if message.action == .begin || message.action == .beginGlobal {
             endDesktopControl()
             guard DesktopInputOwnership.shared.acquire(desktopOwner) else {
                 reply(.desktopControl, DesktopControlMessage(action: .rejected, token: message.token).serialize()); return
             }
-            desktopToken = message.token; pointer.desktopDisplayID = CGMainDisplayID()
+            desktopToken = message.token
+            if message.action == .beginGlobal { pointer.globalMode = true } else { pointer.desktopDisplayID = CGMainDisplayID() }
         }
         desktopExpiry?.cancel()
         let lease = DispatchWorkItem { [weak self] in
@@ -419,7 +499,7 @@ final class SenderEngine {
             reply(.desktopControl, DesktopControlMessage(action: .rejected, token: message.token).serialize())
         }
         desktopExpiry = lease; queue.asyncAfter(deadline: .now()+3, execute: lease)
-        let b = DisplayGeometry.shared.bounds(CGMainDisplayID())
+        let b = DisplayGeometry.shared.bounds(pointer.globalMode ? pointer.displayID : CGMainDisplayID())
         reply(.desktopControl, DesktopControlMessage(action: .accepted, token: message.token, width: UInt32(b.width), height: UInt32(b.height)).serialize())
     }
     private func allowedPointer(_ message: PointerMessage) -> PointerMessage {
@@ -444,7 +524,10 @@ final class SenderEngine {
             var reader = Reader(data); let token = try reader.u64(); let body = try reader.rest()
             if kind == .desktopPointer {
                 let message = try PointerMessage(body)
-                if mouseSharing, desktopToken == token, !adjusting, !rebuilding { pointer.receive(allowedPointer(message)) }
+                if mouseSharing, desktopToken == token, !adjusting, !rebuilding {
+                    pointer.receive(allowedPointer(message))
+                    if message.action == .moveBy { followGlobalCursor(reply: reply) }
+                }
             } else {
                 let message = try KeyboardMessage(body)
                 if keyboardSharing, desktopToken == token { keyboard.receive(message) }
@@ -738,6 +821,7 @@ final class SenderEngine {
                     self.endDesktopControl(); self.pointer.displayID = display
                     self.appliedOptions = options
                     self.peer?.send(.cursorMode, Data([options.nativeCursor ? 1 : 0]))
+                    self.startScreenEdges()
                     self.startCursor()
                     self.quality = AdaptiveQuality(ceiling: options.bitrate)
                     self.latest.clear()
@@ -844,7 +928,7 @@ final class SenderEngine {
         })
     }
     private func suspendConnection(_ reason: String) {
-        streamActivity.stop()
+        streamActivity.stop(); stopScreenEdges()
         inputDelivery?.cancel(); inputDelivery = nil
         generation = UUID(); authenticated = false; fastInputUsed = false
         listener?.service = advertisedService
@@ -885,7 +969,7 @@ final class SenderEngine {
     func stop() { queue.async { self.stopOnQueue("Detenido.", phase: .idle) } }
     private func stopOnQueue(_ reason: String, phase: StreamPhase = .failed) {
         setPhase(phase)
-        streamActivity.stop()
+        streamActivity.stop(); stopScreenEdges()
         inputDelivery?.cancel(); inputDelivery = nil
         graphicsEpoch = UUID(); graphicsMonitor.stop()
         endDesktopControl(); cursorChannel.stop(); pointer.releaseButtons(); keyboard.releaseKeys(); pointer.displayID = 0
@@ -961,6 +1045,7 @@ final class ReceiverEngine {
     private let cursorChannel = CursorChannel()
     private let cursorDelivery = CursorDeliveryGate()
     var onCursorMode: ((Bool) -> Void)?
+    var onScreenEdges: ((UInt8) -> Void)?
     var onCursor: ((Double, Double, Bool, Bool) -> Void)?
     private var desktopInputToken: UInt64?
     private var requestedDesktopToken: UInt64?
@@ -1021,14 +1106,14 @@ final class ReceiverEngine {
         queue.async {
             guard self.hello, self.peer != nil else { return }
             if let recent = self.pendingPointer { self.pendingPointer = nil; self.sendInput(.pointer, recent.serialize()) }
-            if message.action == .begin { self.requestedDesktopToken = message.token }
+            if message.action == .begin || message.action == .beginGlobal { self.requestedDesktopToken = message.token }
             self.sendInteractive(.desktopControl, message.serialize())
             if message.action == .end, self.requestedDesktopToken == message.token { self.requestedDesktopToken = nil; self.desktopInputToken = nil }
         }
     }
     private func receiveDesktopControl(_ data: Data) throws {
         let message = try DesktopControlMessage(data)
-        guard [.accepted, .rejected].contains(message.action) else { throw AireError("Control de escritorio inesperado.") }
+        guard [.accepted, .rejected, .returned].contains(message.action) else { throw AireError("Control de escritorio inesperado.") }
         if message.action == .accepted {
             guard requestedDesktopToken == message.token else {
                 sendInteractive(.desktopControl, DesktopControlMessage(action: .end, token: message.token).serialize()); return
@@ -1142,6 +1227,9 @@ final class ReceiverEngine {
                         throw AireError("El otro Mac: " + reason)
                     } else if kind == .desktopControl, self.hello {
                         try self.receiveDesktopControl(data)
+                    } else if kind == .screenEdges, self.hello {
+                        guard data.count == 1, data[0] <= 15 else { throw AireError("Bordes de pantalla inválidos.") }
+                        self.onScreenEdges?(data[0])
                     } else if kind == .cursorMode, self.hello {
                         guard data.count == 1, data[0] <= 1 else { throw AireError("Modo de cursor inválido.") }
                         self.presentationEpoch &+= 1; self.presentationReported = false
@@ -1419,6 +1507,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     #else
     let engine = ReceiverEngine()
     let desktopBridge = DesktopBridge()
+    let continuous = ContinuousPointer()
+    let continuousSwitch = NSButton(checkboxWithTitle: "Ratón continuo entre pantallas", target: nil, action: nil)
+    private var continuousMonitor: Any?
+    private var continuousTimer: Timer?
     let desktopToggle = NSButton(checkboxWithTitle: "Cruzar al escritorio propio del otro Mac", target: nil, action: nil)
     let desktopEdge = PrisonPopUpButton()
     let desktopStatus = NSTextField(wrappingLabelWithString: "Desactivado. El ratón y teclado siguen en este Mac.")
@@ -1586,6 +1678,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyboardSwitch.state = savedInput.keyboard ? .on : .off; video.keyboardEnabled = savedInput.keyboard
         keyboardSwitch.target = self; keyboardSwitch.action = #selector(toggleKeyboard)
         input.addArrangedSubview(keyboardSwitch)
+        continuousSwitch.state = savedInput.continuous ? .on : .off
+        continuous.enabled = savedInput.mouse && savedInput.continuous
+        continuousSwitch.target = self; continuousSwitch.action = #selector(toggleContinuous)
+        input.addArrangedSubview(continuousSwitch)
+        addText("Ratón continuo: con el visor a pantalla completa, empuja el ratón contra el borde y seguirá por las demás pantallas del Mac que envía (su pantalla y la del otro Mac). El teclado escribe donde hagas clic. ⌃⌥Esc vuelve aquí al instante.", to: input)
         addText("Activa cada control por separado. Haz clic en la imagen para usar este teclado en el otro Mac. Al desactivar un control, PRISON DISPLAY deja de transmitirlo; no cambia ajustes del sistema. ⌘Q, ⌘H y ⌘Tab se quedan aquí.", to: input)
         let desktop = card("RATÓN Y TECLADO ENTRE EQUIPOS", in: root)
         if let box = desktop.superview { advancedViews.append(box) }
@@ -1604,6 +1701,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         desktopStatus.widthAnchor.constraint(equalTo: desktop.widthAnchor).isActive = true
         let desktopPermission = PrisonSecondaryButton(title: "Permitir control desde este Mac…", target: self, action: #selector(openDesktopPermission))
         buttons([desktopPermission], in: desktop)
+        configureContinuousPointer()
         desktopBridge.sendControl = { [weak self] in self?.engine.sendDesktopControl($0) }
         desktopBridge.sendPointer = { [weak self] in self?.engine.sendPointer($0) }
         desktopBridge.sendKeyboard = { [weak self] in self?.engine.sendKeyboard($0) }
@@ -1613,9 +1711,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.desktopToggle.state = .off
             self?.saveInputPreferences()
         }
-        engine.onConnection = { [weak self] connected in DispatchQueue.main.async { if !connected { self?.desktopBridge.connected = false } } }
+        engine.onConnection = { [weak self] connected in DispatchQueue.main.async { if !connected { self?.desktopBridge.connected = false; self?.continuous.leave(); self?.continuous.edges = 0 } } }
         engine.onFullscreenRequest = { [weak self] in DispatchQueue.main.async { self?.enterViewerFullscreen() } }
-        engine.onDesktopControl = { [weak self] message in DispatchQueue.main.async { self?.desktopBridge.reply(message) } }
+        engine.onDesktopControl = { [weak self] message in DispatchQueue.main.async { self?.desktopBridge.reply(message); self?.continuous.reply(message) } }
         engine.onClear = { [weak self] in DispatchQueue.main.async { self?.presenter.clear(); self?.cursorPresenter.clear(); self?.video.clear() } }
         engine.onPixel = { [weak self] pixel, done in
             guard let self = self else { done(.failed("Visor cerrado.")); return }
@@ -2251,6 +2349,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !CommandLine.arguments.contains("--layout-preview") else { return }
         var saved = ReceiverPreferences()
         saved.mouse = mouseSwitch.state == .on; saved.keyboard = keyboardSwitch.state == .on; saved.crossing = desktopToggle.state == .on
+        saved.continuous = continuousSwitch.state == .on
         saved.edge = desktopEdge.indexOfSelectedItem; saved.save()
     }
     @objc func toggleDesktop(_ sender: NSButton) {
@@ -2268,8 +2367,57 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func openDesktopPermission() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") { NSWorkspace.shared.open(url) }
     }
+    @objc func toggleContinuous(_ sender: NSButton) {
+        continuous.enabled = video.mouseEnabled && sender.state == .on
+        saveInputPreferences()
+    }
+    private func configureContinuousPointer() {
+        continuous.sendControl = { [weak self] in self?.engine.sendDesktopControl($0) }
+        continuous.sendPointer = { [weak self] in self?.engine.sendPointer($0) }
+        continuous.sendKeyboard = { [weak self] in self?.engine.sendKeyboard($0) }
+        continuous.onStatus = { [weak self] in self?.desktopStatus.stringValue = $0; self?.inputState.stringValue = $0 }
+        continuous.warp = { [weak self] point in
+            guard let point = point, let target = self?.video.globalPoint(normalized: point) else { return }
+            CGWarpMouseCursorPosition(target)
+        }
+        continuous.onChanged = { [weak self] active in self?.continuousChanged(active) }
+        engine.onScreenEdges = { [weak self] mask in DispatchQueue.main.async { self?.continuous.edges = mask } }
+        video.onEdgePush = { [weak self] edge in
+            guard let self = self, !self.desktopBridge.isActive || !self.desktopBridge.remote else { return false }
+            return self.continuous.push(edgeIndex: edge)
+        }
+        continuousTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.continuous.tick() }
+        RunLoop.main.add(timer, forMode: .common); continuousTimer = timer
+    }
+    private func continuousChanged(_ active: Bool) {
+        if let monitor = continuousMonitor { NSEvent.removeMonitor(monitor); continuousMonitor = nil }
+        guard active else { video.desktopControlActive = false; return }
+        video.desktopControlActive = true; video.focusKeyboard()
+        let types: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .scrollWheel, .keyDown]
+        continuousMonitor = NSEvent.addLocalMonitorForEvents(matching: types) { [weak self] event in
+            guard let self = self, self.continuous.isActive else { return event }
+            let flags = self.video.keyboardEnabled ? UInt64(event.modifierFlags.rawValue) : 0
+            switch event.type {
+            case .keyDown:
+                if event.keyCode == 53, event.modifierFlags.contains([.control, .option]) { self.continuous.leave(); return nil }
+                return event
+            case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: self.continuous.move(dx: Double(event.deltaX), dy: Double(event.deltaY))
+            case .leftMouseDown: self.continuous.button(.leftDown, clicks: event.clickCount, flags: flags)
+            case .leftMouseUp: self.continuous.button(.leftUp, clicks: event.clickCount, flags: flags)
+            case .rightMouseDown: self.continuous.button(.rightDown, clicks: event.clickCount, flags: flags)
+            case .rightMouseUp: self.continuous.button(.rightUp, clicks: event.clickCount, flags: flags)
+            case .otherMouseDown: if event.buttonNumber == 2 { self.continuous.button(.middleDown, flags: flags) }
+            case .otherMouseUp: if event.buttonNumber == 2 { self.continuous.button(.middleUp, flags: flags) }
+            case .scrollWheel: self.continuous.scroll(dy: Double(event.scrollingDeltaY), dx: Double(event.scrollingDeltaX), flags: flags)
+            default: return event
+            }
+            return nil
+        }
+    }
     @objc func toggleMouse(_ sender: NSButton) {
         video.mouseEnabled = sender.state == .on; desktopBridge.mouseEnabled = video.mouseEnabled
+        continuous.enabled = video.mouseEnabled && continuousSwitch.state == .on
         if video.mouseEnabled, desktopToggle.state == .on, sessionHasImage {
             do { try desktopBridge.start() } catch { desktopStatus.stringValue = "\(error)" }
         }
@@ -2458,6 +2606,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillResignActive(_ notification: Notification) {
         #if !SENDER
         desktopBridge.applicationDidResignActive()
+        if continuous.isActive { continuous.leave(); inputState.stringValue = "Ratón devuelto a esta pantalla al cambiar de aplicación." }
         #endif
     }
     func applicationWillTerminate(_ notification: Notification) {

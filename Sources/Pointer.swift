@@ -109,7 +109,9 @@ struct KeyboardMessage: Equatable {
 
 // Coordinates are normalized to the captured image, independent of window size.
 struct PointerMessage: Equatable {
-    enum Action: UInt8 { case move = 0, leftDown, leftUp, rightDown, rightUp, scroll }
+    // moveBy: relative movement of the sending Mac's real cursor across all of
+    // its displays (deltaX = horizontal, delta = vertical, x = y = 0).
+    enum Action: UInt8 { case move = 0, leftDown, leftUp, rightDown, rightUp, scroll, moveBy, middleDown, middleUp }
     let action: Action
     let x: Double
     let y: Double
@@ -174,20 +176,44 @@ final class PointerInjector {
     var trusted: () -> Bool = { AXIsProcessTrusted() }
     var displayID: CGDirectDisplayID = 0
     var desktopDisplayID: CGDirectDisplayID?
+    // Continuous mode: the remote mouse drives the real cursor on every display.
+    var globalMode = false { didSet { if globalMode != oldValue { postedPosition = nil } } }
+    var location: () -> CGPoint = { CGEvent(source: nil)?.location ?? .zero }
+    var displays: () -> [CGRect] = {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).map { DisplayGeometry.shared.bounds($0) }
+    }
     private var left = false
     private var right = false
-    private var position = CGPoint.zero
+    private var middle = false
+    private(set) var position = CGPoint.zero
+    // The last relative movement hit an edge with no display beyond it.
+    private(set) var lastMoveBlocked = false
     private var postedPosition: CGPoint?
     // Tests inspect generated events without posting input to the user's desktop.
     var post: (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }
     func receive(_ message: PointerMessage) {
-        let target = desktopDisplayID ?? displayID
-        guard target != 0, trusted() else { return }
-        position = message.point(in: DisplayGeometry.shared.bounds(target))
+        guard trusted() else { return }
+        if globalMode {
+            let current = postedPosition ?? location()
+            if message.action == .moveBy {
+                let wanted = CGPoint(x: current.x + CGFloat(message.deltaX), y: current.y + CGFloat(message.delta))
+                position = clampToDisplays(wanted, displays()); lastMoveBlocked = position != wanted
+            } else { position = current }
+        } else {
+            let target = desktopDisplayID ?? displayID
+            guard target != 0, message.action != .moveBy else { return }
+            position = message.point(in: DisplayGeometry.shared.bounds(target))
+        }
         let type: CGEventType
         let button: CGMouseButton
         switch message.action {
-        case .move: type = left ? .leftMouseDragged : (right ? .rightMouseDragged : .mouseMoved); button = right ? .right : .left
+        case .move, .moveBy: type = left ? .leftMouseDragged : (right ? .rightMouseDragged : (middle ? .otherMouseDragged : .mouseMoved)); button = right ? .right : (middle ? .center : .left)
+        case .middleDown: middle = true; type = .otherMouseDown; button = .center
+        case .middleUp: middle = false; type = .otherMouseUp; button = .center
         case .leftDown: left = true; type = .leftMouseDown; button = .left
         case .leftUp: left = false; type = .leftMouseUp; button = .left
         case .rightDown: right = true; type = .rightMouseDown; button = .right
@@ -199,7 +225,7 @@ final class PointerInjector {
         // Some applications resolve a button event against the current Quartz
         // cursor rather than trusting only the event's embedded coordinate.
         // Align it first when a click arrives before its preceding move.
-        if (message.action == .leftDown || message.action == .rightDown), postedPosition != position,
+        if [.leftDown, .rightDown, .middleDown].contains(message.action), postedPosition != position,
            let alignment = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: position, mouseButton: .left) {
             alignment.flags = CGEventFlags(rawValue: message.flags); post(alignment); postedPosition = position
         }
@@ -209,11 +235,11 @@ final class PointerInjector {
     }
     func releaseButtons() {
         if trusted() {
-            for (held, type, button) in [(left, CGEventType.leftMouseUp, CGMouseButton.left), (right, .rightMouseUp, .right)] where held {
+            for (held, type, button) in [(left, CGEventType.leftMouseUp, CGMouseButton.left), (right, .rightMouseUp, .right), (middle, .otherMouseUp, .center)] where held {
                 if let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: position, mouseButton: button) { post(event) }
             }
         }
-        left = false; right = false
+        left = false; right = false; middle = false
     }
 }
 #endif

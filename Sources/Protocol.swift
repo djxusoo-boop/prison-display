@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 #if !LEGACY
 import Network
 #endif
@@ -7,16 +8,42 @@ import Security
 import CryptoKit
 #endif
 
+// Which edges of a streamed display touch another display of the sending Mac.
+// Bit n corresponds to DesktopEdge(rawValue: n): right, left, above, below.
+enum ScreenEdges {
+    static func mask(of display: CGRect, among others: [CGRect]) -> UInt8 {
+        var mask: UInt8 = 0
+        for other in others where other != display && !other.isEmpty {
+            let vertical = min(display.maxY, other.maxY) - max(display.minY, other.minY) > 0
+            let horizontal = min(display.maxX, other.maxX) - max(display.minX, other.minX) > 0
+            if vertical && abs(other.minX - display.maxX) < 1 { mask |= 1 }
+            if vertical && abs(other.maxX - display.minX) < 1 { mask |= 2 }
+            if horizontal && abs(other.maxY - display.minY) < 1 { mask |= 4 }
+            if horizontal && abs(other.minY - display.maxY) < 1 { mask |= 8 }
+        }
+        return mask
+    }
+    static func contains(_ mask: UInt8, edgeIndex: Int) -> Bool { (0..<4).contains(edgeIndex) && mask & (1 << UInt8(edgeIndex)) != 0 }
+}
+// Keep a point on the union of displays, as WindowServer does for the cursor.
+func clampToDisplays(_ point: CGPoint, _ displays: [CGRect]) -> CGPoint {
+    let valid = displays.filter { !$0.isEmpty }
+    guard !valid.isEmpty else { return point }
+    if valid.contains(where: { $0.contains(point) }) { return point }
+    func clamp(_ r: CGRect) -> CGPoint { CGPoint(x: min(max(point.x, r.minX), r.maxX - 1), y: min(max(point.y, r.minY), r.maxY - 1)) }
+    func distance(_ q: CGPoint) -> CGFloat { (q.x - point.x) * (q.x - point.x) + (q.y - point.y) * (q.y - point.y) }
+    return valid.map(clamp).min(by: { distance($0) < distance($1) })!
+}
 struct AireError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
 }
 enum Wire {
-    static let revision: UInt16 = 10
+    static let revision: UInt16 = 11
     static let maxPacket = 4 * 1024 * 1024
     static let pointerSize = 42
     static let service = "_airedisplay._tcp"
-    enum Kind: UInt8 { case hello = 1, video = 2, ack = 3, ping = 4, pong = 5, failure = 6, pointer = 7, cursor = 8, cursorOffer = 9, keyboard = 10, cursorMode = 11, desktopControl = 12, desktopPointer = 13, desktopKeyboard = 14, presented = 15, brightnessCommand = 16, brightnessResult = 17, fullscreenCommand = 18 }
+    enum Kind: UInt8 { case hello = 1, video = 2, ack = 3, ping = 4, pong = 5, failure = 6, pointer = 7, cursor = 8, cursorOffer = 9, keyboard = 10, cursorMode = 11, desktopControl = 12, desktopPointer = 13, desktopKeyboard = 14, presented = 15, brightnessCommand = 16, brightnessResult = 17, fullscreenCommand = 18, screenEdges = 19 }
     static func validateFullscreenCommand(_ data: Data) throws {
         guard data.isEmpty else { throw AireError("Orden de pantalla completa inválida.") }
     }

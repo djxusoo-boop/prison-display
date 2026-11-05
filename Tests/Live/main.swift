@@ -61,6 +61,7 @@ var streamLink: ConnectionLink?
 var cursorPositions: [PointerMessage] = []
 var cursorModes: [Bool] = []
 var desktopReplies: [DesktopControlMessage] = []
+var screenEdgeMasks: [UInt8] = []
 var inputEvents: [CGEvent] = []
 sender.pointer.post = { event in DispatchQueue.main.async { inputEvents.append(event) } }
 sender.keyboard.post = { event in DispatchQueue.main.async { inputEvents.append(event) } }
@@ -89,6 +90,7 @@ sender.onLink = { link in
                 do {
                     if kind == .desktopControl { let message = try DesktopControlMessage(data); DispatchQueue.main.async { desktopReplies.append(message) } }
                     if kind == .cursorMode { DispatchQueue.main.async { cursorModes.append(data == Data([1])) } }
+                    if kind == .screenEdges { DispatchQueue.main.async { screenEdgeMasks.append(data.first ?? 255) } }
                     if kind == .cursor { let message = try PointerMessage(Data(data.dropFirst(2))); DispatchQueue.main.async { cursorPositions.append(message) } }
                     if kind == .video {
                         let frame = try VideoFrame(data)
@@ -151,6 +153,48 @@ do {
     client?.send(.desktopControl, DesktopControlMessage(action: .begin,token: 3).serialize())
     check(pump({ desktopReplies.last?.token == 3 && desktopReplies.last?.action == .rejected }), "desktop control denied without sender accessibility")
     sender.queue.sync { sender.desktopPermission = { true } }
+    // Continuous pointer: the receiver's mouse drives the sender's real cursor
+    // across all of its displays and is handed back when it returns.
+    check(pump({ !screenEdgeMasks.isEmpty }) && screenEdgeMasks.allSatisfy { $0 <= 15 }, "sender reports which edges of the streamed display continue onto another")
+    let streamed = sender.queue.sync { DisplayGeometry.shared.bounds(sender.pointer.displayID) }
+    let neighbour = CGRect(x: streamed.maxX, y: streamed.minY, width: 1000, height: streamed.height)
+    var fakeCursor = CGPoint(x: streamed.midX, y: streamed.midY)
+    sender.queue.sync {
+        sender.pointer.displays = { [streamed, neighbour] }
+        sender.pointer.location = { fakeCursor }
+    }
+    client?.send(.desktopControl, DesktopControlMessage(action: .beginGlobal, token: 5).serialize())
+    check(pump({ desktopReplies.last?.token == 5 && desktopReplies.last?.action == .accepted }), "continuous pointer lease accepted")
+    let continuousHeartbeat = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in client?.send(.desktopControl, DesktopControlMessage(action: .heartbeat, token: 5).serialize()) }
+    let beforeContinuous = inputEvents.count
+    let steps = Int((streamed.width / 2 + 200) / 120) + 1
+    for _ in 0..<steps { desktopInput(.desktopPointer, PointerMessage(action: .moveBy, x: 0, y: 0, delta: 0, deltaX: 120).serialize(), token: 5) }
+    check(pump({ inputEvents.count >= beforeContinuous + steps }), "relative movements are injected")
+    let crossed = inputEvents.last?.location ?? .zero
+    check(neighbour.contains(crossed) && desktopReplies.last?.action != .returned, "cursor travels onto the neighbouring display without ending the lease")
+    desktopInput(.desktopPointer, PointerMessage(action: .leftDown, x: 0.9, y: 0.9).serialize(), token: 5)
+    desktopInput(.desktopKeyboard, KeyboardMessage(action: .down, keyCode: 0).serialize(), token: 5)
+    check(pump({ inputEvents.last?.type == .keyDown }) && inputEvents.last { $0.type == .leftMouseDown }?.location == crossed, "click lands where the cursor is and the keyboard follows it")
+    desktopInput(.desktopPointer, PointerMessage(action: .leftUp, x: 0.9, y: 0.9).serialize(), token: 5)
+    desktopInput(.desktopKeyboard, KeyboardMessage(action: .up, keyCode: 0).serialize(), token: 5)
+    for _ in 0..<4 { desktopInput(.desktopPointer, PointerMessage(action: .moveBy, x: 0, y: 0, delta: 0, deltaX: -120).serialize(), token: 5) }
+    check(pump({ desktopReplies.last?.token == 5 && desktopReplies.last?.action == .returned }), "returning onto the streamed display hands control back")
+    if let back = desktopReplies.last, back.action == .returned {
+        check(back.returnedPoint.x > 0.85 && back.returnedPoint.x <= 1 && abs(back.returnedPoint.y - 0.5) < 0.02, "hand-back reports where the cursor re-entered")
+    }
+    continuousHeartbeat.invalidate()
+    let afterReturn = inputEvents.count
+    desktopInput(.desktopPointer, PointerMessage(action: .moveBy, x: 0, y: 0, delta: 0, deltaX: 50).serialize(), token: 5)
+    _ = pump({ false }, timeout: 0.2)
+    check(inputEvents.count == afterReturn, "relative input after hand-back is discarded")
+    fakeCursor = CGPoint(x: streamed.midX, y: streamed.midY)
+    sender.queue.sync { sender.pointer.displays = { [streamed] } }
+    client?.send(.desktopControl, DesktopControlMessage(action: .beginGlobal, token: 6).serialize())
+    check(pump({ desktopReplies.last?.token == 6 && desktopReplies.last?.action == .accepted }), "second continuous lease accepted")
+    let toWall = Int(streamed.width / 2 / 120) + 3
+    for _ in 0..<toWall { desktopInput(.desktopPointer, PointerMessage(action: .moveBy, x: 0, y: 0, delta: 0, deltaX: 120).serialize(), token: 6) }
+    check(pump({ desktopReplies.last?.token == 6 && desktopReplies.last?.action == .returned }), "no neighbouring display: control returns instead of trapping the mouse")
+    sender.queue.sync { sender.pointer.location = { CGEvent(source: nil)?.location ?? .zero } }
     var virtualID = displayIDs().first { !baseline.contains($0) }
     let recoveryID = virtualID; let beforeRecovery = pixels
     Capture.latest?.onRecoverableError?("Synthetic missing source")
