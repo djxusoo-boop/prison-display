@@ -1,0 +1,25 @@
+PRISON DISPLAY v0.4.22 — Ratón y teclado independientes
+
+En Recibir pantalla:
+Compartir ratón controla el envío del ratón de este Mac al otro.
+Compartir teclado controla el envío del teclado desde el visor y durante el cruce.
+Se puede mantener solo el ratón o solo el teclado. Para escribir sin compartir ratón, haz clic en la imagen: ese clic solo da el foco local, no se transmite.
+
+En Enviar pantalla:
+Compartir ratón y Compartir teclado permiten o bloquean lo que llega del otro Mac a esa pantalla. Si envías a dos Mac, cada pantalla tiene su elección.
+
+Los estados se recuerdan. Apagar un control libera las pulsaciones mantenidas por PRISON DISPLAY.
+Estos controles no desactivan dispositivos ni cambian permisos o preferencias de macOS. Tampoco impiden usar el ratón propio del Mac principal sobre sus escritorios extendidos: ese movimiento nativo pertenece a macOS.
+
+Pruebas automáticas: ratón y teclado independientes, liberación de botones/teclas, persistencia y rechazo de entrada en el emisor mediante conexión TLS local. Todos los eventos de las pruebas se interceptan, sin publicarlos al escritorio.
+
+Resultados: pruebas de ratón/teclado en ARM e Intel sin fallos. Pruebas de emisor por TLS con eventos interceptados sin fallos. Persistencia y cruce sin fallos. Distribución: 2029 comprobaciones y 4 de nombres sin fallos. Instaladores verificados contra la firma persistente y el contenido exacto de las apps finales.
+
+No instalada: Pro no responde en 192.168.1.141 e iMac no resuelve por su nombre local. No se cambia la app del Air para conservar versiones compatibles mientras faltan los otros dos. Pendiente prueba física conjunta.
+
+Actualización 21/10/2026:
+Instalada v0.4.22 únicamente en Air e iMac. Pro no contactado ni actualizado.
+iMac accesible como iMac-de-xuso.local; comprobada contra la huella SSH previamente autorizada.
+iMac: instalador completado, firma y versión verificadas. Prueba local en Catalina: 2381 comprobaciones de interfaz sin fallos y pruebas de independencia/soltar pulsaciones sin fallos.
+Air: detenido instalador propio que no avanzaba; app sustituida por la copia firmada verificada. Copias anteriores en /private/tmp/prison-upgrade-0422-Air-previous.app y /private/tmp/prison-upgrade-0422-Air-retired.app.
+App Air abierta v0.4.22 con ambos interruptores visibles. En este punto espera autorización manual del Llavero; reconexión pendiente de confirmar. No se cambiaron ajustes ni permisos del sistema.

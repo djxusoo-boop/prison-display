@@ -1,0 +1,23 @@
+PRISON DISPLAY 0.4.21 — Revisión de fluidez
+
+Cambios:
+- El cursor recibido evita consultar el ratón local salvo durante la supresión del eco de entrada local.
+- Reutilización del formato de imagen únicamente cuando CoreMedia confirma compatibilidad.
+- Cambios de visibilidad del cursor sin animación implícita.
+- Diagrama de conexión se redibuja solo si cambia su contenido.
+
+air: preparación de 10.000 formatos, mediana anterior 19.88 ms, nueva 15.24 ms. Solo mide esta operación; no latencia del ratón ni FPS.
+pro: preparación de 10.000 formatos, mediana anterior 137.07 ms, nueva 59.00 ms. Solo mide esta operación; no latencia del ratón ni FPS.
+imac: preparación de 10.000 formatos, mediana anterior 27.64 ms, nueva 16.74 ms. Solo mide esta operación; no latencia del ratón ni FPS.
+
+Red bajo las conexiones actuales: 20 respuestas por equipo, sin pérdidas; máximo Pro 247,143 ms, iMac 326,186 ms. ICMP no equivale a latencia de la app ni identifica por sí solo la causa.
+
+Las pruebas no generan ratón ni teclado en el escritorio. La mejora perceptible requiere prueba física del usuario.
+
+Pruebas: Apple e Intel sin fallos en cursor/teclado. Pro físico: 2248 comprobaciones de interfaz sin fallos. iMac físico: 2236 sin fallos. En ambos: 1000 actualizaciones de cursor remoto sin consultar el ratón local; el eco de ratón local se sigue suprimiendo y se mantiene el mapeo tras cambiar resolución.
+
+Documentación consultada:
+https://developer.apple.com/documentation/appkit/nswindow/mouselocationoutsideofeventstream
+https://developer.apple.com/documentation/coremedia/cmvideoformatdescriptioncreateforimagebuffer(allocator:imagebuffer:formatdescriptionout:)
+
+Instalada en los tres Mac con firma verificada. Tras confirmar el Llavero, Air muestra Imagen en directo para Pro e iMac. Se ha enviado Pantalla completa a ambos. Pendiente valoración física del usuario; no se declara un porcentaje de mejora de latencia.

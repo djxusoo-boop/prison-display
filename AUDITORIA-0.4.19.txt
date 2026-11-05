@@ -1,0 +1,17 @@
+PRISON DISPLAY 0.4.19 · 15 de octubre de 2026
+
+Incluye el rediseño de 0.4.18 en ambas apps y limpieza del visor receptor. El teclado se habilita con «Usar este teclado en la pantalla recibida», ahora visible también en modo sencillo. La preferencia anterior se conserva. Hay que hacer clic en la imagen para dirigir las teclas al Mac emisor. El emisor debe conservar Accesibilidad para inyectar la entrada.
+
+Los atajos ⌘C y ⌘V se envían al Mac remoto cuando el visor tiene el foco. ⌘Q, ⌘H y ⌘Tab permanecen locales. Copiar y pegar actúa sobre el portapapeles del Mac remoto: esta revisión no añade sincronización del portapapeles entre equipos.
+
+Pruebas locales: visor y teclado en ARM e Intel sin fallos, incluidos atajos, foco y liberación de teclas. Interfaz en cuatro tamaños y modo sencillo/experto: 1893 comprobaciones sin fallos más las cuatro comprobaciones de nombres. Paquetes verificados con la identidad persistente.
+
+Instalada en los tres equipos el 15 de octubre: Pro e iMac con versión 0.4.19 y firmas verificadas; instalador del Air correcto y app 0.4.19 observada en ejecución. Se cerraron las apps antes de instalar y se conservan copias anteriores en /private/tmp/prison-upgrade-0419 (receptores) y /private/tmp/prison-upgrade-0419-Air-previous.app (Air). Las pruebas de eventos son sintéticas; falta comprobar escritura física desde el iMac al escritorio extendido del Air. La firma local puede volver a provocar el aviso de autorización del Llavero al actualizar; este problema no se considera resuelto.
+
+Pruebas aisladas adicionales en los equipos reales: Pro High Sierra, 2192 comprobaciones de interfaz y teclado sin fallos; iMac Catalina, 2180 y teclado sin fallos. El último ajuste de ancho del botón Reconectar se comprueba en la batería local final. No se generó entrada real en aplicaciones del usuario.
+
+Prueba posterior a instalación: el Air muestra autorización del Llavero pendiente. Se ha pedido al usuario confirmar los avisos protegidos en los tres equipos; no se ha validado todavía la reconexión conjunta ni la escritura física desde el iMac. No se han modificado las reglas del Llavero ni los permisos del sistema.
+
+Seguimiento posterior a autorizar Llavero: Air muestra ambos receptores en Imagen en directo. Interfaz 0.4.19 y visor con imagen observados en el iMac. Su opción de teclado ya aparece activada, con canal rápido conectado. Las posiciones se conservan: Air (0,0), iMac (-1920,0), Pro (-3840,0). La prueba de escritura a través de Compartir Pantalla no es concluyente y se pidió una prueba física al usuario; no se declara validado todavía el teclado físico ni sus atajos. Hoja de TextEdit de prueba Sin título 2 apartada, sin guardar ni eliminar.
+
+Confirmación del usuario · 15 de octubre de 2026: tras hacer clic en un campo del escritorio recibido del Air, el texto «prueba» escrito con el teclado físico del iMac aparece correctamente. Validada la escritura física iMac → escritorio extendido del Air. Los atajos con modificadores se han probado de forma simulada; falta una confirmación física específica de copiar y pegar.

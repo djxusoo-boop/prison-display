@@ -1,0 +1,22 @@
+PRISON DISPLAY v0.4.20 · Actualización visual grafito
+
+## 0.4.20 · Apariencia grafito
+- Fondos grafito, tarjetas con bordes suaves y acciones moradas en enviar y recibir.
+- Diagrama nativo de los equipos y distintivo de estado conectado a la fase real.
+- Conserva controles, conexiones guardadas, ratón, teclado, brillo y pantalla completa.
+- Instalada y verificada en los tres Mac; reconexión y pantalla completa comprobadas con ambas pantallas.
+
+
+PRISON DISPLAY v0.4.20 — Apariencia grafito
+
+Interfaz nativa: 1949 comprobaciones de distribución sin fallos y 4 comprobaciones de nombres sin fallos.
+Regresión de cursor y teclado: sin fallos en Apple e Intel; estas pruebas no generan entradas reales.
+Ambos instaladores: versión, contenido exacto y firma de la app verificados.
+Las vistas adjuntas son capturas de la interfaz ejecutada con equipos de prueba.
+Instalada en Air, Pro e iMac: instaladores y firmas verificados.
+Pro High Sierra: 2248 comprobaciones de interfaz y regresión de cursor/teclado sin fallos.
+iMac Catalina: 2236 comprobaciones de interfaz y regresión de cursor/teclado sin fallos.
+Tras cerrar y reabrir ambos receptores, el Air vuelve a indicar Imagen en directo en los dos.
+Botón Pantalla completa accionado en el Air: visor Pro 1280×800 y visor iMac 1920×1080, ambos en origen 0,0.
+Disposición conservada: Pro (-3840,0), iMac (-1920,0), Air (0,0).
+No se ha repetido una prueba física de teclado ni una medición óptica de latencia en esta actualización visual.

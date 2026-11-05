@@ -1,0 +1,11 @@
+PRISON DISPLAY 0.4.18 · Revisión visual · 15 de octubre de 2026
+
+Interfaz común para MacBook e iMac. Navegación compacta, controles conjuntos en una barra inferior fija, contenido centrado de ancho limitado, eliminación de marca y controles duplicados, títulos de botones dibujados y recortados dentro de sus límites. «Pantalla completa» y «Reconectar» tienen nombres breves. Ayuda manual con tamaño de botón completo.
+
+Validación: modo simple y experto, enviar y recibir, cuatro tamaños de ventana (860×560, 980×760, 1200×850 y 1710×1000), texto sin compresión vertical y controles sin solapamiento. Compilación universal y firma persistente verificadas. La revisión visual se ejecutó también en High Sierra y Catalina sin fallos (2168 y 2156 comprobaciones respectivamente); los últimos ajustes del botón de ayuda y pie pasan 1813 comprobaciones locales sin fallos.
+
+Los ejecutables de prueba usan conexiones simuladas y no consultan las autorizaciones guardadas del usuario. Las capturas son de la interfaz real de prueba con nombres y estados de ejemplo. No equivalen a una nueva prueba de vídeo o latencia física.
+
+La 0.4.18 está preparada en los instaladores; las apps instaladas de los tres Mac siguen en 0.4.17 hasta sustituirlas. Actualizar puede volver a requerir autorización del Llavero por la limitación identificada de la firma local; esta revisión visual no corrige ese problema.
+
+Registros: build/visual-0.4.18-*.log. Copia previa del código visual: backups/before-visual-0.4.18.
