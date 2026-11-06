@@ -78,6 +78,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     private var summaryTimer: Timer?
     let expertSwitch = NSButton(checkboxWithTitle: "Modo experto", target: nil, action: nil)
     let autoStartSwitch = NSButton(checkboxWithTitle: "Abrir al iniciar sesión", target: nil, action: nil)
+    let clipboardSwitch = NSButton(checkboxWithTitle: "Portapapeles compartido", target: nil, action: nil)
     let autoStartStatus = NSTextField(wrappingLabelWithString: "")
     private(set) var expertMode = false
 
@@ -139,6 +140,9 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         autoStartSwitch.state = AutoLaunchPreference.isEnabled(defaults: workspaceDefaults) ? .on : .off
         autoStartSwitch.isEnabled = LoginItemManager.supportsSystemManagedStartup
         autoStartSwitch.target = self; autoStartSwitch.action = #selector(toggleAutoStart)
+        clipboardSwitch.state = ClipboardSync.shared.enabled ? .on : .off
+        clipboardSwitch.toolTip = "Copia en un equipo y pega en los demás conectados (texto e imágenes). Las contraseñas de los gestores no se comparten."
+        clipboardSwitch.target = self; clipboardSwitch.action = #selector(toggleClipboard)
         let side = PrisonStack(); side.orientation = .vertical; side.alignment = .leading; side.spacing = 12
         let icon = NSImageView(); icon.image = Bundle.main.url(forResource: "PrisonDisplay", withExtension: "icns").flatMap(NSImage.init(contentsOf:)); icon.imageScaling = .scaleProportionallyUpOrDown
         let brand = NSTextField(labelWithString: "PRISON DISPLAY"); brand.font = .systemFont(ofSize: 16, weight: .bold); brand.textColor = .white
@@ -161,9 +165,9 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             button.setAccessibilityLabel(title == "−" ? "Bajar brillo conjunto" : "Subir brillo conjunto"); brightnessButtons.addArrangedSubview(button)
         }
         autoStartStatus.font = .systemFont(ofSize: 11); autoStartStatus.textColor = NSColor(calibratedWhite: 0.7, alpha: 1); autoStartStatus.isHidden = true
-        for view in [icon, brand, computer, separator, sendButton, secondSendButton, receiveButton, screenSummary, expertSwitch, autoStartSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [icon, brand, computer, separator, sendButton, secondSendButton, receiveButton, screenSummary, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         icon.widthAnchor.constraint(equalToConstant: 56).isActive = true; icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
-        for view in [brand, computer, separator, sendButton, secondSendButton, receiveButton, screenSummary, expertSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
+        for view in [brand, computer, separator, sendButton, secondSendButton, receiveButton, screenSummary, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         for button in [sendButton, secondSendButton, receiveButton] { button.heightAnchor.constraint(equalToConstant: 46).isActive = true; button.target = self; button.isBordered = false }
         sendButton.action = #selector(chooseSend); secondSendButton.action = #selector(chooseSecondSend); receiveButton.action = #selector(chooseReceive)
@@ -237,6 +241,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         if !CommandLine.arguments.contains("--layout-preview") { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); activate(); applyAutoStartPreference()
             summaryTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refreshSummary() } }
     }
+    @objc private func toggleClipboard() { ClipboardSync.shared.enabled = clipboardSwitch.state == .on }
     @objc private func toggleExpertMode() { setExpertMode(expertSwitch.state == .on) }
     private func applyAutoStartPreference() {
         guard LoginItemManager.supportsSystemManagedStartup else {

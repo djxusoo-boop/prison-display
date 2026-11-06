@@ -4,6 +4,8 @@ import AVFoundation
 import Network
 #endif
 import CoreMedia
+import CommonCrypto
+import Security
 import os.log
 
 
@@ -413,6 +415,8 @@ final class SenderEngine {
         onFirstImage?()
     }
     var onFrameRoundTrip: ((Double) -> Void)?
+    var onClipboard: ((Data) -> Void)?
+    func sendClipboard(_ data: Data) { queue.async { if self.authenticated { self.peer?.send(.clipboard, data) } } }
     private var listener: NWListener?
     var onListenerPrepared: ((NWListener) -> Void)?
     private lazy var pairing = PairingServer(queue: queue)
@@ -622,13 +626,15 @@ final class SenderEngine {
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self = self, self.active, self.listener === listener, self.peer == nil else { connection.cancel(); return }
                 let peer = Peer(connection, queue: self.queue); self.peer = peer
+                let updates = UpdateSession(send: { [weak peer] kind, data in peer?.send(kind, data) }, status: { [weak self] in self?.onStatus?($0) })
                 peer.onReady = { peer.send(.hello, Wire.hello(role: "sender")) }
                 peer.onPacket = { [weak self, weak peer] kind, data in
                     guard let self = self, let peer = peer, self.peer === peer else { return }
                     do {
+                        if UpdateSession.kinds.contains(kind) { try updates.handle(kind, data); return }
                         if kind == .hello {
                             guard !self.authenticated else { throw AireError("Saludo duplicado.") }
-                            _ = try Wire.checkHello(data, expected: "receiver"); self.onPeerConnected?(try Wire.peerName(data)); self.authenticated = true; self.streamActivity.start(); self.pairing.stop()
+                            guard try acceptHello(data, expected: "receiver", updates: updates) else { return }; self.onPeerConnected?(try Wire.peerName(data)); self.authenticated = true; self.streamActivity.start(); self.pairing.stop()
                             self.listener?.service = nil
                             let session = self.generation
                             if self.dedicatedCursorEnabled {
@@ -689,6 +695,8 @@ final class SenderEngine {
                             }
                         } else if [.pointer, .keyboard, .desktopControl, .desktopPointer, .desktopKeyboard].contains(kind), self.authenticated {
                             try self.receiveInput(kind, data, reply: { [weak peer] in peer?.send($0, $1) })
+                        } else if kind == .clipboard, self.authenticated {
+                            _ = try ClipboardPayload(data); self.onClipboard?(data)
                         } else if kind == .failure { throw AireError(String(data: data, encoding: .utf8) ?? "Error del receptor.") }
                         else { throw AireError("Mensaje inesperado.") }
                     } catch { peer.end("\(error)") }
@@ -1046,6 +1054,8 @@ final class ReceiverEngine {
     private let cursorDelivery = CursorDeliveryGate()
     var onCursorMode: ((Bool) -> Void)?
     var onScreenEdges: ((UInt8) -> Void)?
+    var onClipboard: ((Data) -> Void)?
+    func sendClipboard(_ data: Data) { queue.async { if self.hello { self.peer?.send(.clipboard, data) } } }
     var onCursor: ((Double, Double, Bool, Bool) -> Void)?
     private var desktopInputToken: UInt64?
     private var requestedDesktopToken: UInt64?
@@ -1206,13 +1216,15 @@ final class ReceiverEngine {
                 do { try self.receiveDesktopControl(data) } catch { self.peer?.end("\(error)") }
             } }
             let peer = Peer(NWConnection(to: endpoint, using: params), queue: self.queue); self.peer = peer
+            let updates = UpdateSession(send: { [weak peer] kind, data in peer?.send(kind, data) }, status: { [weak self] in self?.onStatus?($0) })
             peer.onReady = { [weak self] in self?.onNetworkReady?(peer.connection.currentPath); peer.send(.hello, Wire.hello(role: "receiver")) }
             peer.onPacket = { [weak self, weak peer] kind, data in
                 guard let self = self, let peer = peer, self.peer === peer else { return }
                 do {
+                    if UpdateSession.kinds.contains(kind) { try updates.handle(kind, data); return }
                     if kind == .hello {
                         guard !self.hello else { throw AireError("Saludo duplicado.") }
-                        _ = try Wire.checkHello(data, expected: "sender"); self.onPeerConnected?(try Wire.peerName(data)); self.hello = true; self.streamActivity.start(); self.sessionApproved = true
+                        guard try acceptHello(data, expected: "sender", updates: updates) else { return }; self.onPeerConnected?(try Wire.peerName(data)); self.hello = true; self.streamActivity.start(); self.sessionApproved = true
                         self.setPhase(.preparing); self.onConnection?(true); self.onStatus?("Conectado al otro Mac. Esperando imagen…")
                     } else if kind == .brightnessCommand || kind == .brightnessResult {
                             guard self.hello, data.count <= 1024 else { throw AireError("Ajuste de brillo no autorizado o inválido.") }
@@ -1221,6 +1233,8 @@ final class ReceiverEngine {
                         guard self.hello else { throw AireError("Orden de pantalla completa no autorizada.") }
                         try Wire.validateFullscreenCommand(data)
                         self.onFullscreenRequest?()
+                        } else if kind == .clipboard, self.hello {
+                        _ = try ClipboardPayload(data); self.onClipboard?(data)
                         } else if kind == .failure, self.hello {
                         guard data.count <= 2048, let reason = String(data: data, encoding: .utf8), !reason.isEmpty else { throw AireError("Error remoto inválido.") }
                         self.sessionApproved = false
@@ -1344,6 +1358,258 @@ final class ReceiverEngine {
     }
 }
 #endif
+
+// Automatic updates between paired computers. When versions differ, the older
+// app asks the newer one for its build, verifies that it is signed with the very
+// same identity (designated requirement) and replaces itself. The sending Mac
+// carries the iMac build and the Windows app inside Resources/Updates.
+enum AppUpdater {
+    static var enabled: Bool {
+        get { UserDefaults.standard.object(forKey: "PrisonDisplay.autoUpdate") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "PrisonDisplay.autoUpdate") }
+    }
+    static var updatesFolder: URL? { Bundle.main.resourceURL?.appendingPathComponent("Updates") }
+    static func sha256(_ url: URL) throws -> (hex: String, size: Int) {
+        let handle = try FileHandle(forReadingFrom: url); defer { handle.closeFile() }
+        var context = CC_SHA256_CTX(); CC_SHA256_Init(&context); var size = 0
+        while true {
+            let chunk = handle.readData(ofLength: 1 << 20)
+            if chunk.isEmpty { break }
+            size += chunk.count
+            chunk.withUnsafeBytes { _ = CC_SHA256_Update(&context, $0.baseAddress, CC_LONG(chunk.count)) }
+        }
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH)); CC_SHA256_Final(&digest, &context)
+        return (digest.map { String(format: "%02x", $0) }.joined(), size)
+    }
+    static func run(_ tool: String, _ arguments: [String]) throws {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: tool); process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw AireError("No se pudo preparar la actualización (\(URL(fileURLWithPath: tool).lastPathComponent)).") }
+    }
+    // A zip of the app for that bundle identifier, built by this Mac.
+    static func package(for identifier: String) throws -> URL {
+        if let embedded = updatesFolder?.appendingPathComponent(identifier + ".zip"), FileManager.default.fileExists(atPath: embedded.path) { return embedded }
+        guard identifier == Bundle.main.bundleIdentifier else { throw AireError("Este Mac no lleva la actualización para ese equipo.") }
+        let zip = FileManager.default.temporaryDirectory.appendingPathComponent("PrisonDisplay-\(identifier)-\(AppVersion.current).zip")
+        if !FileManager.default.fileExists(atPath: zip.path) {
+            let partial = zip.appendingPathExtension("partial"); try? FileManager.default.removeItem(at: partial)
+            try run("/usr/bin/ditto", ["-c", "-k", "--keepParent", Bundle.main.bundleURL.path, partial.path])
+            try FileManager.default.moveItem(at: partial, to: zip)
+        }
+        return zip
+    }
+    static func stream(_ file: URL, version: String, send: (Wire.Kind, Data) -> Void) throws {
+        let digest = try sha256(file)
+        send(.updateOffer, try UpdateOffer(version: version, size: digest.size, sha256: digest.hex).data)
+        let handle = try FileHandle(forReadingFrom: file); defer { handle.closeFile() }
+        var sequence: UInt32 = 0
+        while true {
+            let chunk = handle.readData(ofLength: UpdateOffer.chunkSize)
+            if chunk.isEmpty { break }
+            send(.updateChunk, Wire.updateChunk(sequence: sequence, chunk)); sequence += 1
+        }
+        send(.updateDone, Data())
+    }
+    // Receiving side: written to disk while it arrives, checked at the end.
+    final class Download {
+        let offer: UpdateOffer
+        let url: URL
+        private let handle: FileHandle
+        private var next: UInt32 = 0
+        private(set) var received = 0
+        init(_ offer: UpdateOffer) throws {
+            self.offer = offer
+            url = FileManager.default.temporaryDirectory.appendingPathComponent("PrisonDisplay-update-\(UUID().uuidString).bin")
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw AireError("No se pudo guardar la actualización.") }
+            handle = try FileHandle(forWritingTo: url)
+        }
+        func append(_ data: Data) throws {
+            var r = Reader(data); let sequence = try r.u32(); let body = try r.rest()
+            guard sequence == next, !body.isEmpty, received + body.count <= offer.size else { throw AireError("Actualización incompleta.") }
+            handle.write(body); received += body.count; next += 1
+        }
+        func finish() throws -> URL {
+            handle.closeFile()
+            let digest = try AppUpdater.sha256(url)
+            guard digest.size == offer.size, digest.hex == offer.sha256 else { try? FileManager.default.removeItem(at: url); throw AireError("La actualización llegó dañada.") }
+            return url
+        }
+        deinit { handle.closeFile() }
+    }
+    // Only an app with this app's identifier and signer, and a newer version.
+    static func install(_ zip: URL, version: String) throws -> URL {
+        let fm = FileManager.default
+        let current = Bundle.main.bundleURL
+        let staging = current.deletingLastPathComponent().appendingPathComponent(".PrisonDisplay-staging-\(UUID().uuidString)")
+        let fallback = fm.temporaryDirectory.appendingPathComponent("PrisonDisplay-staging-\(UUID().uuidString)")
+        let folder = (try? fm.createDirectory(at: staging, withIntermediateDirectories: false)) != nil ? staging : fallback
+        if folder == fallback { try fm.createDirectory(at: fallback, withIntermediateDirectories: true) }
+        defer { try? fm.removeItem(at: folder); try? fm.removeItem(at: zip) }
+        try run("/usr/bin/ditto", ["-x", "-k", zip.path, folder.path])
+        guard let app = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "app" }),
+              let info = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist")),
+              info["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier,
+              info["CFBundleShortVersionString"] as? String == version,
+              AppVersion.compare(version, AppVersion.current) > 0 else { throw AireError("La actualización no corresponde a esta app.") }
+        var me: SecCode?, requirement: SecRequirement?, staticCode: SecStaticCode?, ownStatic: SecStaticCode?
+        guard SecCodeCopySelf([], &me) == errSecSuccess, let me = me,
+              SecCodeCopyStaticCode(me, [], &ownStatic) == errSecSuccess, let ownStatic = ownStatic,
+              SecCodeCopyDesignatedRequirement(ownStatic, [], &requirement) == errSecSuccess, let requirement = requirement,
+              SecStaticCodeCreateWithPath(app as CFURL, [], &staticCode) == errSecSuccess, let staticCode = staticCode,
+              SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate), requirement) == errSecSuccess
+        else { throw AireError("La actualización no está firmada por PRISON DISPLAY. No se instala.") }
+        // Swap in place; the previous copy stays hidden beside it for recovery.
+        let previous = current.deletingLastPathComponent().appendingPathComponent(".\(current.lastPathComponent).anterior")
+        try? fm.removeItem(at: previous)
+        try fm.moveItem(at: current, to: previous)
+        do { try fm.moveItem(at: app, to: current) }
+        catch { try? fm.moveItem(at: previous, to: current); throw AireError("No se pudo sustituir la app: \(error.localizedDescription)") }
+        return current
+    }
+    static func relaunch(_ app: URL) {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep 1.5; /usr/bin/open -n \"$0\"", app.path]
+        try? process.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSApp.terminate(nil) }
+    }
+}
+
+// Strict hello, except that a version difference can start an update.
+func acceptHello(_ data: Data, expected: String, updates: UpdateSession) throws -> Bool {
+    do { _ = try Wire.checkHello(data, expected: expected); return true }
+    catch let mismatch as VersionMismatch {
+        if updates.mismatch(mismatch) { return false }
+        throw AireError(mismatch.description + " Actualiza ambas apps o activa la actualización automática.")
+    }
+}
+
+// One per connection, on the engine queue.
+final class UpdateSession {
+    static let kinds: Set<Wire.Kind> = [.updateRequest, .updateOffer, .updateChunk, .updateDone]
+    private let send: (Wire.Kind, Data) -> Void
+    private let status: (String) -> Void
+    private var download: AppUpdater.Download?
+    private var serving = false
+    var install: (URL, String) throws -> URL = AppUpdater.install
+    var relaunch: (URL) -> Void = { url in DispatchQueue.main.async { AppUpdater.relaunch(url) } }
+    var package: (String) throws -> URL = AppUpdater.package
+    var identifier = Bundle.main.bundleIdentifier ?? ""
+    init(send: @escaping (Wire.Kind, Data) -> Void, status: @escaping (String) -> Void) { self.send = send; self.status = status }
+    // True: keep the connection open for the update.
+    func mismatch(_ m: VersionMismatch) -> Bool {
+        if m.remoteIsNewer {
+            guard AppUpdater.enabled, let request = try? UpdateRequest(identifier: identifier, version: AppVersion.current) else { return false }
+            send(.updateRequest, request.data)
+            status("El otro equipo tiene PRISON DISPLAY \(m.remote). Descargando la actualización…")
+            return true
+        }
+        status("El otro equipo tiene la versión \(m.remote). Enviándole la \(AppVersion.current)…")
+        return true
+    }
+    func handle(_ kind: Wire.Kind, _ data: Data) throws {
+        switch kind {
+        case .updateRequest:
+            let request = try UpdateRequest(data)
+            guard !serving, AppVersion.compare(AppVersion.current, request.version) > 0 else { return }
+            serving = true
+            let send = self.send, status = self.status, package = self.package
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let file = try package(request.identifier)
+                    try AppUpdater.stream(file, version: AppVersion.current, send: send)
+                    status("Actualización \(AppVersion.current) enviada. El otro equipo se reiniciará solo.")
+                } catch { send(.failure, Data("\(error)".prefix(400).utf8)); status("\(error)") }
+            }
+        case .updateOffer:
+            let offer = try UpdateOffer(data)
+            guard AppUpdater.enabled, download == nil, AppVersion.compare(offer.version, AppVersion.current) > 0 else { throw AireError("Actualización no solicitada.") }
+            download = try AppUpdater.Download(offer)
+        case .updateChunk:
+            guard let download = download else { throw AireError("Actualización no solicitada.") }
+            try download.append(data)
+            let percent = download.received * 100 / max(1, download.offer.size)
+            if percent % 10 == 0 { status("Descargando actualización \(download.offer.version)… \(percent) %") }
+        case .updateDone:
+            guard let download = download else { throw AireError("Actualización no solicitada.") }
+            self.download = nil
+            let zip = try download.finish(), version = download.offer.version
+            let install = self.install, relaunch = self.relaunch, status = self.status
+            status("Instalando PRISON DISPLAY \(version)…")
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { let app = try install(zip, version); status("Actualizado a \(version). Reiniciando…"); relaunch(app) }
+                catch { status("\(error)") }
+            }
+        default: break
+        }
+    }
+}
+
+// One clipboard across the connected computers. Each connection is a channel;
+// a copy made here goes to every channel, and one received from a channel is
+// pasted here and forwarded to the others (the sending Mac relays between the
+// receivers and the PC). Password managers mark secrets as concealed or
+// transient: those are never sent. Main thread only.
+final class ClipboardSync {
+    static let shared = ClipboardSync()
+    var enabled: Bool {
+        get { defaults.object(forKey: "PrisonDisplay.clipboard") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "PrisonDisplay.clipboard"); if newValue { lastChange = pasteboard.changeCount } }
+    }
+    var defaults = UserDefaults.standard
+    var pasteboard = NSPasteboard.general
+    private var channels: [UUID: (Data) -> Void] = [:]
+    private var lastChange = NSPasteboard.general.changeCount
+    private var last: ClipboardPayload?
+    private var timer: Timer?
+    func register(_ send: @escaping (Data) -> Void) -> UUID {
+        let id = UUID()
+        DispatchQueue.main.async {
+            self.channels[id] = send
+            if self.timer == nil {
+                self.lastChange = self.pasteboard.changeCount
+                let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.poll() }
+                RunLoop.main.add(timer, forMode: .common); self.timer = timer
+            }
+        }
+        return id
+    }
+    func unregister(_ id: UUID) { DispatchQueue.main.async { self.channels[id] = nil } }
+    // Local copy → every connected computer.
+    func poll() {
+        guard pasteboard.changeCount != lastChange else { return }
+        lastChange = pasteboard.changeCount
+        guard enabled, !channels.isEmpty, let payload = read(), payload != last else { return }
+        last = payload
+        let wire = payload.serialized
+        channels.values.forEach { $0(wire) }
+    }
+    // Remote copy → paste here and relay to the other channels.
+    func receive(_ data: Data, from source: UUID) {
+        DispatchQueue.main.async {
+            guard self.enabled, let payload = try? ClipboardPayload(data), payload != self.last else { return }
+            self.last = payload
+            self.pasteboard.clearContents()
+            switch payload.kind {
+            case .text: self.pasteboard.setString(payload.text ?? "", forType: .string)
+            case .png: self.pasteboard.setData(payload.data, forType: .png)
+            }
+            self.lastChange = self.pasteboard.changeCount
+            for (id, send) in self.channels where id != source { send(data) }
+        }
+    }
+    private static let secretTypes = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType", "org.nspasteboard.AutoGeneratedType", "com.agilebits.onepassword"]
+    func read() -> ClipboardPayload? {
+        let types = (pasteboard.types ?? []).map { $0.rawValue }
+        guard !types.contains(where: { Self.secretTypes.contains($0) }) else { return nil }
+        if let text = pasteboard.string(forType: .string), !text.isEmpty { return try? ClipboardPayload(text: text) }
+        if let png = pasteboard.data(forType: .png) { return try? ClipboardPayload(kind: .png, data: png) }
+        if let tiff = pasteboard.data(forType: .tiff), let image = NSBitmapImageRep(data: tiff), let png = image.representation(using: .png, properties: [:]) {
+            return try? ClipboardPayload(kind: .png, data: png)
+        }
+        return nil
+    }
+}
 
 final class LatestCursorPresenter {
     private let lock = NSLock()
@@ -1615,6 +1881,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         key.stringValue = rememberedProfile?.key ?? ((try? newPairingKey()) ?? ""); key.isEditable = false; key.isSelectable = true
         copyLink.target = self; copyLink.action = #selector(copyConnectionLink); copyLink.isEnabled = false
 
+        let clipboardChannel = ClipboardSync.shared.register { [weak self] data in self?.engine.sendClipboard(data) }
+        engine.onClipboard = { data in ClipboardSync.shared.receive(data, from: clipboardChannel) }
         engine.onLink = { [weak self] link in DispatchQueue.main.async { self?.connectionLink = link; self?.currentSessionLink = link; self?.copyLink.isEnabled = link != nil; self?.updateConnectionActions() } }
         engine.onConfirm = { [weak self] name, code, done in self?.confirmConnection(name: name, code: code, done: done) }
         primary.title = "Hacer disponible este Mac"; primary.target = self; primary.action = #selector(start)
@@ -1725,6 +1993,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         engine.onConnection = { [weak self] connected in DispatchQueue.main.async { if !connected { self?.desktopBridge.connected = false; self?.continuous.leave(); self?.continuous.edges = 0 } } }
         engine.onFullscreenRequest = { [weak self] in DispatchQueue.main.async { self?.enterViewerFullscreen() } }
         engine.onDesktopControl = { [weak self] message in DispatchQueue.main.async { self?.desktopBridge.reply(message); self?.continuous.reply(message) } }
+        let clipboardChannel = ClipboardSync.shared.register { [weak self] data in self?.engine.sendClipboard(data) }
+        engine.onClipboard = { data in ClipboardSync.shared.receive(data, from: clipboardChannel) }
         engine.onClear = { [weak self] in DispatchQueue.main.async { self?.presenter.clear(); self?.cursorPresenter.clear(); self?.video.clear() } }
         engine.onPixel = { [weak self] pixel, done in
             guard let self = self else { done(.failed("Visor cerrado.")); return }
@@ -2263,6 +2533,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         addText("Lleva el ratón al borde elegido de tus pantallas y pasará al PC con el teclado: ⌘C/⌘V funcionan como Ctrl+C/Ctrl+V y ⌥2 escribe @. Vuelve por el mismo borde o pulsa ⌃⌥Esc. Necesita el permiso de Accesibilidad de este Mac.", to: pc)
         let link = WindowsLink.shared
         link.bridge.edge = DesktopEdge(rawValue: saved.edge) ?? .right
+        let pcClipboard = ClipboardSync.shared.register { data in link.sendClipboard(data) }
+        link.windowsUpdate = {
+            guard AppUpdater.enabled, let folder = AppUpdater.updatesFolder,
+                  let version = try? String(contentsOf: folder.appendingPathComponent("windows-version.txt"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+                  Wire.normalizedVersion(version) != nil else { return nil }
+            let exe = folder.appendingPathComponent("PRISON-DISPLAY-PC-Windows.exe")
+            return FileManager.default.fileExists(atPath: exe.path) ? (exe, version) : nil
+        }
+        link.streamUpdate = { file, version, send in try AppUpdater.stream(file, version: version, send: send) }
+        link.onClipboard = { data in ClipboardSync.shared.receive(data, from: pcClipboard) }
         link.onStatus = { [weak self] text in self?.pcStatus.stringValue = text }
         link.onConnected = { [weak self] name in self?.pcConnect.title = name == nil ? "Conectar" : "Conectado · \(name!)" }
         link.bridge.onDisabled = { [weak self] in self?.pcStatus.stringValue = "macOS pausó el control del PC. Pulsa Conectar para reanudarlo." }

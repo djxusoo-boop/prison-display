@@ -1,6 +1,12 @@
 import AppKit
 #if SENDER || UNIFIED
 if CommandLine.arguments.contains("--virtual-display-helper") { exit(ADVirtualScreen.runHelper(CommandLine.arguments)) }
+// Verification of a real update with this signed app: install the zip into a
+// copy of this app (never into /Applications) and report, without relaunching.
+if let index = CommandLine.arguments.firstIndex(of: "--update-self-test"), CommandLine.arguments.count > index + 2 {
+    do { let app = try AppUpdater.install(URL(fileURLWithPath: CommandLine.arguments[index + 1]), version: CommandLine.arguments[index + 2]); print("INSTALLED", app.path); exit(0) }
+    catch { print("REFUSED", error); exit(1) }
+}
 if CommandLine.arguments.contains("--diagnostic-screen-permission") {
     print("screen-preflight=\(ScreenCaptureAccess.permitted())")
     exit(0)
@@ -18,6 +24,16 @@ if CommandLine.arguments.contains("--diagnostic-input-permission") {
     exit(allowed ? 0 : 2)
 }
 #endif
+// An older copy registered to open at login from another folder (for example
+// a build directory) would advertise the same screens with another version.
+// Keep only this copy; its helper processes live inside the same bundle.
+if let identifier = Bundle.main.bundleIdentifier, !CommandLine.arguments.contains("--layout-preview") {
+    let own = Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+    for other in NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+    where other.processIdentifier != getpid() && other.bundleURL?.standardizedFileURL.resolvingSymlinksInPath() != own {
+        other.terminate()
+    }
+}
 let app = NSApplication.shared
 #if UNIFIED
 let controller = PrisonWorkspaceController()

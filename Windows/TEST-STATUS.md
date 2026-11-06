@@ -1,3 +1,12 @@
+# Validación · 0.2.1 · 6 de noviembre de 2026
+
+- Núcleo con protocolo revisión 12 y vectores de la app Mac 0.4.25: 10046 comprobaciones, 0 fallos.
+- Agente: portapapeles y actualización (rechazo de versiones antiguas, descargas dañadas, datos desordenados; actualización posible desde otra revisión), 0 fallos.
+- Punta a punta con el enlace real del Mac: portapapeles en ambos sentidos y envío verificado de un .exe nuevo, 0 fallos.
+- Pendiente en la torre: sustitución real del .exe y reinicio; portapapeles de Windows real.
+
+---
+
 # Validación · 0.2.0 · 6 de noviembre de 2026
 
 ## Comprobado en macOS

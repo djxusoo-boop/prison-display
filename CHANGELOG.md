@@ -1,3 +1,9 @@
+## 0.4.25 · Actualización automática y portapapeles compartido
+- Actualización automática: si dos equipos tienen versiones distintas, el más nuevo envía su versión al otro. El Mac que la recibe comprueba que está firmada con la misma identidad, la instala y se reinicia; la copia anterior queda oculta junto a la app. El Air lleva dentro la app del iMac y la de Windows, y actualiza también el PC.
+- Portapapeles compartido entre Air, Pro, iMac y PC: copia en uno y pega en otro (texto; imágenes entre Mac). Las contraseñas marcadas por gestores no se comparten. Interruptor en la barra lateral.
+- Si queda abierta una copia antigua de la app desde otra carpeta, la nueva la cierra al arrancar.
+- Protocolo revisión 12. Esta es la última versión que hay que instalar a mano en cada equipo.
+
 ## 0.4.24 · Más resolución que la pantalla, por HDMI y por Wi-Fi
 - Corregido: macOS activaba 1920 × 1080 en las pantallas virtuales aunque se pidiera 2560 × 1440 o 4K. Ahora se selecciona el modo exacto (y se crea en 0,5 s en lugar de esperar 6 s).
 - Monitor HDMI: escritorios de 2560 × 1440 a 5120 × 2880 (5K) mostrados reducidos en el monitor; sin la superficie 2× oculta, que cuadruplicaba el trabajo sin ganar nitidez.

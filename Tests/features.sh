@@ -33,6 +33,10 @@ fi
 xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D UNIFIED Sources/Protocol.swift Sources/Pointer.swift Sources/DesktopControl.swift build/Version.swift Tests/Continuous/main.swift -o build/ContinuousTests
 if command -v cmake >/dev/null; then /bin/zsh Windows/tests/run-mac-e2e.sh; else print "SKIP: Windows agent end-to-end (cmake missing)"; fi
 build/ContinuousTests
+xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/Clipboard/main.swift -o build/ClipboardTests
+build/ClipboardTests
+xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/Update/main.swift -o build/UpdateTests
+build/UpdateTests
 /bin/zsh Tests/Presentation/run.sh
 /bin/zsh Tests/Safety/Sender/run.sh
 xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/Live/main.swift -o build/LiveTests

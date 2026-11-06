@@ -25,7 +25,18 @@ struct InputSink {
     virtual void wheel(int vertical, int horizontal) = 0;
     virtual void key(ScanKey key, bool down) = 0;
     virtual bool available() { return true; }
+    // Shared clipboard (UTF-8 text). clipboard_changed returns text copied on
+    // this PC since the last call, excluding text set by set_clipboard.
+    virtual void set_clipboard(const std::string&) {}
+    virtual std::optional<std::string> clipboard_changed() { return std::nullopt; }
+    // A verified newer build of this app (Windows: replace the .exe and restart).
+    virtual void install_update(const Bytes&, const std::string& /*version*/) {}
 };
+// -1, 0 or 1 comparing "1.2.3" versions numerically.
+int compare_versions(const std::string& a, const std::string& b);
+constexpr std::size_t max_clipboard_text = 1000000;
+// Wire form: 1 = UTF-8 text (images from the Mac are ignored on the PC).
+Bytes encode_clipboard_text(const std::string& text);
 
 // One controlling Mac at a time. The Mac requests a short lease (begin),
 // keeps it alive with heartbeats and ends it when the mouse comes back. Input
@@ -53,6 +64,10 @@ private:
     bool greeted_ = false, mouse_ = true, keyboard_ = true;
     std::uint64_t token_ = 0, expires_ = 0;
     bool left_ = false, right_ = false, middle_ = false;
+    std::string update_version_, update_sha_;
+    std::size_t update_size_ = 0; std::uint32_t update_next_ = 0; Bytes update_;
+    bool updating_ = false;
+    bool update_only_ = false; // Different protocol revision: accept only an update.
     std::set<std::uint16_t> held_;
 };
 }

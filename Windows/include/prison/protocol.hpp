@@ -9,13 +9,14 @@
 namespace prison {
 using Bytes = std::vector<std::uint8_t>;
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; };
-constexpr std::uint16_t wire_revision = 11;
+constexpr std::uint16_t wire_revision = 12;
 constexpr std::size_t max_packet = 4 * 1024 * 1024;
 constexpr std::uint64_t allowed_input_flags = 0x00bf0000; // Caps, Shift, Ctrl, Alt, Cmd, NumPad, Fn.
 enum class Kind : std::uint8_t {
     hello=1, video, ack, ping, pong, failure, pointer, cursor, cursor_offer,
     keyboard, cursor_mode, desktop_control, desktop_pointer, desktop_keyboard,
-    presented, brightness_command, brightness_result, fullscreen_command, screen_edges
+    presented, brightness_command, brightness_result, fullscreen_command, screen_edges, clipboard,
+    update_request, update_offer, update_chunk, update_done
 };
 struct Packet { Kind kind; Bytes body; };
 Bytes frame(const Packet& packet);

@@ -1,4 +1,4 @@
-# PRISON DISPLAY Windows · 0.2.0
+# PRISON DISPLAY Windows · 0.2.1
 
 App para el PC con Windows: **recibe el ratón y el teclado del Mac**. Lleva el
 ratón del Air al borde elegido de sus pantallas y pasa al PC con el teclado;
@@ -12,6 +12,8 @@ vuelve por el mismo borde o con ⌃⌥Esc en el Mac.
   → AltGr (⌥2 = @), ⌥ derecha → Alt. Rueda, botón central y Bloq Mayús incluidos.
 - Un único Mac controla a la vez, con permiso temporal renovado cada 0,5 s.
   Si el Mac deja de responder 3 s, se sueltan todas las teclas y botones.
+- Portapapeles compartido de texto con los Mac.
+- Actualización automática: el Air envía la versión nueva, se verifica su SHA-256, el .exe se sustituye y se reinicia. Funciona aunque cambie la revisión del protocolo.
 - Pendiente: ver la pantalla del Mac en Windows (captura y vídeo), instalador.
 
 ## Compilar

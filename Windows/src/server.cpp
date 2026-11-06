@@ -149,14 +149,18 @@ bool AgentServer::run(const std::atomic<bool>& stop, const Status& status) {
             } catch (const std::exception& error) {
                 drop(std::string("Conexión rechazada: ") + error.what()); continue;
             }
-            if (!client->write(replies)) { drop("Se perdió la conexión con el Mac."); continue; }
+            bool written = false;
+            try { written = client->write(replies); } catch (const std::exception&) {}
+            if (!written) { drop("Se perdió la conexión con el Mac."); continue; }
             if (greeted && !was_greeted) status("Conectado con " + peer + ". Lleva el ratón al borde elegido en el Mac.");
             (void)controlling;
         }
         if (client) {
             std::vector<Packet> expired;
-            { std::lock_guard<std::mutex> lock(mutex_); expired = agent_.tick(now_ms()); }
-            if (!expired.empty() && !client->write(expired)) { drop("Se perdió la conexión con el Mac."); continue; }
+            try {
+                { std::lock_guard<std::mutex> lock(mutex_); expired = agent_.tick(now_ms()); }
+                if (!expired.empty() && !client->write(expired)) { drop("Se perdió la conexión con el Mac."); continue; }
+            } catch (const std::exception& error) { drop(std::string("Error interno: ") + error.what()); continue; }
             if (now_ms() - client->last_receive > 12000) drop("El Mac dejó de responder. Esperando…");
         }
     }

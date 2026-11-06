@@ -25,7 +25,9 @@ for arch in arm64 x86_64; do
   fi
   xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -D UNIFIED -target "$arch-apple-macosx$minimum" -sdk "$sdk" "${shared[@]}" "${extra[@]}" "build/VirtualDisplay-$arch.o" "build/LegacyCapture-$arch.o" -import-objc-header Sources/UnifiedBridge.h -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' Sources/main.swift -o "build/Unified-$arch"
 done
-for role in Sender Receiver; do
+# The receiver is built first: the MacBook app carries it (and the Windows
+# app) so it can update the iMac and the PC automatically.
+for role in Receiver Sender; do
   name='PRISON DISPLAY MacBook'
   [[ "$role" == Receiver ]] && name='PRISON DISPLAY iMac'
   app="build/$name.app"
@@ -42,5 +44,13 @@ app,role,name,version=sys.argv[1:]
 info=dict(CFBundleExecutable='AireDisplay',CFBundleIdentifier='local.airedisplay.'+role,CFBundleName=name,CFBundleDisplayName=name,CFBundleIconFile='PrisonDisplay',CFBundlePackageType='APPL',CFBundleShortVersionString=version,CFBundleVersion=version,LSMinimumSystemVersion='10.13',LSMinimumSystemVersionByArchitecture={'arm64':'11.0','x86_64':'10.13'},NSHighResolutionCapable=True,NSLocalNetworkUsageDescription='Encontrar y conectar tus Mac para enviar o recibir una pantalla.',NSBonjourServices=['_airedisplay._tcp','_airepair._tcp','_airecursor._tcp'],NSScreenCaptureUsageDescription='Enviar la pantalla seleccionada a otro Mac.',CFBundleURLTypes=[{'CFBundleURLName':'local.airedisplay.connection','CFBundleURLSchemes':['airedisplay']}])
 Path(app,'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY
+  if [[ "$role" == Sender ]]; then
+    updates="$app/Contents/Resources/Updates"; rm -rf "$updates"; mkdir -p "$updates"
+    ditto -c -k --keepParent "build/PRISON DISPLAY iMac.app" "$updates/local.airedisplay.Receiver.zip"
+    if [[ -f Windows/build/windows/prison_display.exe ]]; then
+      cp Windows/build/windows/prison_display.exe "$updates/PRISON-DISPLAY-PC-Windows.exe"
+      cp Windows/VERSION "$updates/windows-version.txt"
+    else print 'Aviso: falta Windows/build/windows/prison_display.exe; el Air no podrá actualizar el PC.'; fi
+  fi
   python3 Signing/sign.py "$app"
 done

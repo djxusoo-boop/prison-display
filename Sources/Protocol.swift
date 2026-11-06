@@ -34,16 +34,77 @@ func clampToDisplays(_ point: CGPoint, _ displays: [CGRect]) -> CGPoint {
     func distance(_ q: CGPoint) -> CGFloat { (q.x - point.x) * (q.x - point.x) + (q.y - point.y) * (q.y - point.y) }
     return valid.map(clamp).min(by: { distance($0) < distance($1) })!
 }
+// Different app versions: the newer one can update the older one.
+struct VersionMismatch: Error, CustomStringConvertible {
+    let remote: String
+    var remoteIsNewer: Bool { AppVersion.compare(remote, AppVersion.current) > 0 }
+    var description: String { "Versiones distintas (remota \(remote), local \(AppVersion.current))." }
+}
+extension AppVersion {
+    // Numeric comparison of "1.2.3" style versions: -1, 0 or 1.
+    static func compare(_ a: String, _ b: String) -> Int {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let l = i < x.count ? x[i] : 0, r = i < y.count ? y[i] : 0
+            if l != r { return l < r ? -1 : 1 }
+        }
+        return 0
+    }
+}
+// "version|size|sha256" for an update offer; "identifier|version" for a request.
+struct UpdateOffer: Equatable {
+    static let maxSize = 64 * 1024 * 1024
+    static let chunkSize = 1024 * 1024
+    let version: String, size: Int, sha256: String
+    init(version: String, size: Int, sha256: String) throws {
+        guard Wire.normalizedVersion(version) != nil, (1...Self.maxSize).contains(size), sha256.count == 64,
+              sha256.allSatisfy({ $0.isHexDigit }) else { throw AireError("Actualización inválida.") }
+        self.version = version; self.size = size; self.sha256 = sha256.lowercased()
+    }
+    init(_ data: Data) throws {
+        guard data.count <= 256, let text = String(data: data, encoding: .utf8) else { throw AireError("Actualización inválida.") }
+        let f = text.split(separator: "|", omittingEmptySubsequences: false)
+        guard f.count == 3, let size = Int(f[1]) else { throw AireError("Actualización inválida.") }
+        try self.init(version: String(f[0]), size: size, sha256: String(f[2]))
+    }
+    var data: Data { Data("\(version)|\(size)|\(sha256)".utf8) }
+}
+struct UpdateRequest: Equatable {
+    let identifier: String, version: String
+    init(identifier: String, version: String) throws {
+        guard (1...128).contains(identifier.count), identifier.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }),
+              Wire.normalizedVersion(version) != nil else { throw AireError("Petición de actualización inválida.") }
+        self.identifier = identifier; self.version = version
+    }
+    init(_ data: Data) throws {
+        guard data.count <= 256, let text = String(data: data, encoding: .utf8) else { throw AireError("Petición de actualización inválida.") }
+        let f = text.split(separator: "|", omittingEmptySubsequences: false)
+        guard f.count == 2 else { throw AireError("Petición de actualización inválida.") }
+        try self.init(identifier: String(f[0]), version: String(f[1]))
+    }
+    var data: Data { Data("\(identifier)|\(version)".utf8) }
+}
+extension Wire {
+    static func normalizedVersion(_ v: String) -> String? {
+        let parts = v.split(separator: ".", omittingEmptySubsequences: false)
+        guard (2...4).contains(parts.count), v.count <= 24, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) else { return nil }
+        return v
+    }
+    static func updateChunk(sequence: UInt32, _ body: Data) -> Data { var d = Data(); d.u32(sequence); d.append(body); return d }
+}
+
 struct AireError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
 }
 enum Wire {
-    static let revision: UInt16 = 11
+    static let revision: UInt16 = 12
     static let maxPacket = 4 * 1024 * 1024
     static let pointerSize = 42
     static let service = "_airedisplay._tcp"
-    enum Kind: UInt8 { case hello = 1, video = 2, ack = 3, ping = 4, pong = 5, failure = 6, pointer = 7, cursor = 8, cursorOffer = 9, keyboard = 10, cursorMode = 11, desktopControl = 12, desktopPointer = 13, desktopKeyboard = 14, presented = 15, brightnessCommand = 16, brightnessResult = 17, fullscreenCommand = 18, screenEdges = 19 }
+    enum Kind: UInt8 { case hello = 1, video = 2, ack = 3, ping = 4, pong = 5, failure = 6, pointer = 7, cursor = 8, cursorOffer = 9, keyboard = 10, cursorMode = 11, desktopControl = 12, desktopPointer = 13, desktopKeyboard = 14, presented = 15, brightnessCommand = 16, brightnessResult = 17, fullscreenCommand = 18, screenEdges = 19, clipboard = 20,
+        // Updates (kept stable across versions): request, offer, chunk, done.
+        updateRequest = 21, updateOffer = 22, updateChunk = 23, updateDone = 24 }
     static func validateFullscreenCommand(_ data: Data) throws {
         guard data.isEmpty else { throw AireError("Orden de pantalla completa inválida.") }
     }
@@ -75,7 +136,7 @@ enum Wire {
         let fields = s.split(separator: "|", omittingEmptySubsequences: false)
         guard fields.count == 3, fields[0] == expected else { throw AireError("La otra app tiene un rol incorrecto.") }
         let version = String(fields[1])
-        guard version == AppVersion.current else { throw AireError("Versiones distintas (remota \(version), local \(AppVersion.current)). Actualiza ambas apps.") }
+        guard version == AppVersion.current else { throw VersionMismatch(remote: version) }
         _ = try peerName(data)
         return version
     }
@@ -483,6 +544,29 @@ final class VideoRouteResolver {
         queue.asyncAfter(deadline: .now() + 2) { finish(endpoint) }
         #endif
     }
+}
+
+// Shared clipboard: plain text or a PNG image, copied on one computer and
+// available to paste on the others. Bounded well under the packet limit.
+struct ClipboardPayload: Equatable {
+    enum Kind: UInt8 { case text = 1, png = 2 }
+    static let maxText = 1_000_000
+    static let maxImage = 3_500_000
+    let kind: Kind
+    let data: Data
+    init(kind: Kind, data: Data) throws {
+        guard !data.isEmpty, data.count <= (kind == .text ? Self.maxText : Self.maxImage) else { throw AireError("Portapapeles demasiado grande.") }
+        if kind == .text { guard String(data: data, encoding: .utf8) != nil else { throw AireError("Texto del portapapeles inválido.") } }
+        else { guard data.starts(with: [0x89, 0x50, 0x4E, 0x47]) else { throw AireError("Imagen del portapapeles inválida.") } }
+        self.kind = kind; self.data = Data(data)
+    }
+    init(text: String) throws { try self.init(kind: .text, data: Data(text.utf8)) }
+    init(_ wire: Data) throws {
+        guard let first = wire.first, let kind = Kind(rawValue: first) else { throw AireError("Portapapeles inválido.") }
+        try self.init(kind: kind, data: Data(wire.dropFirst()))
+    }
+    var serialized: Data { var d = Data([kind.rawValue]); d.append(data); return d }
+    var text: String? { kind == .text ? String(data: data, encoding: .utf8) : nil }
 }
 
 // Strict, small messages. No display capture or input permission is needed.

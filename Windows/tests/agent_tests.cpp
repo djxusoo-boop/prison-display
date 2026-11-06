@@ -1,5 +1,6 @@
 #include "prison/agent.hpp"
 #include <cstdio>
+#include <openssl/evp.h>
 #include <string>
 #include <vector>
 using namespace prison;
@@ -7,6 +8,11 @@ static int failures = 0;
 static void check(bool ok, const char* name) { std::printf("%s: %s\n", ok ? "PASS" : "FAIL", name); if (!ok) ++failures; }
 struct Recorder : InputSink {
     std::vector<std::string> events;
+    std::string pasted; std::optional<std::string> copied;
+    Bytes installed; std::string installed_version;
+    void install_update(const Bytes& b, const std::string& v) override { installed = b; installed_version = v; }
+    void set_clipboard(const std::string& t) override { pasted = t; }
+    std::optional<std::string> clipboard_changed() override { auto c = copied; copied.reset(); return c; }
     void move(double x, double y) override { char b[64]; std::snprintf(b, sizeof b, "move %.3f %.3f", x, y); events.push_back(b); }
     void button(Button b, bool down) override { events.push_back(std::string(b == Button::left ? "left" : b == Button::right ? "right" : "middle") + (down ? " down" : " up")); }
     void wheel(int v, int h) override { events.push_back("wheel " + std::to_string(v) + " " + std::to_string(h)); }
@@ -60,6 +66,46 @@ int main() {
     check(released_click && released_c && released_ctrl, "expiry releases the held click and keys");
     out = agent.receive({Kind::desktop_control, encode(DesktopControl{DesktopControl::Action::begin_global, 9, 0, 0})}, 8000);
     check(control(out).action == DesktopControl::Action::rejected, "continuous Mac-only mode is refused by the PC");
+    Bytes clip = encode_clipboard_text("Hola ñ €");
+    agent.receive({Kind::clipboard, clip}, 8000);
+    check(sink.pasted == "Hola ñ €", "text copied on the Mac is pasted on the PC");
+    Bytes image{2, 0x89, 0x50, 0x4E, 0x47}; agent.receive({Kind::clipboard, image}, 8000);
+    check(sink.pasted == "Hola ñ €", "images from the Mac are ignored without error");
+    sink.copied = std::string("Desde Windows");
+    out = agent.tick(8000);
+    check(out.size() == 1 && out[0].kind == Kind::clipboard && Bytes(out[0].body.begin() + 1, out[0].body.end()) == Bytes{'D','e','s','d','e',' ','W','i','n','d','o','w','s'}, "text copied on the PC goes to the Mac");
+    check(agent.tick(8000).empty(), "the same copy is sent once");
+    rejected = false; try { agent.receive({Kind::clipboard, Bytes{9, 1}}, 8000); } catch (const Error&) { rejected = true; }
+    check(rejected, "unknown clipboard format rejected");
+    {
+        Bytes exe(2'500'000); for (std::size_t i = 0; i < exe.size(); ++i) exe[i] = static_cast<std::uint8_t>(i * 31);
+        unsigned char d[32]; unsigned int n = 0; EVP_Digest(exe.data(), exe.size(), d, &n, EVP_sha256(), nullptr);
+        std::string hex; for (auto b : d) { char x[3]; std::snprintf(x, 3, "%02x", b); hex += x; }
+        auto offer = [&](const std::string& v, const std::string& h) { std::string t = v + "|" + std::to_string(exe.size()) + "|" + h; return Packet{Kind::update_offer, Bytes(t.begin(), t.end())}; };
+        auto chunk = [&](std::uint32_t seq, std::size_t from, std::size_t to) { Bytes b{std::uint8_t(seq >> 24), std::uint8_t(seq >> 16), std::uint8_t(seq >> 8), std::uint8_t(seq)}; b.insert(b.end(), exe.begin() + from, exe.begin() + to); return Packet{Kind::update_chunk, b}; };
+        rejected = false; try { agent.receive(offer("0.2.0", hex), 8000); } catch (const Error&) { rejected = true; }
+        check(rejected, "an older or equal build is never installed");
+        agent.receive(offer("0.3.0", hex), 8000);
+        agent.receive(chunk(0, 0, 1'000'000), 8000); agent.receive(chunk(1, 1'000'000, 2'000'000), 8000); agent.receive(chunk(2, 2'000'000, exe.size()), 8000);
+        agent.receive({Kind::update_done, {}}, 8000);
+        check(sink.installed == exe && sink.installed_version == "0.3.0", "a verified newer build is installed");
+        sink.installed.clear();
+        std::string bad = hex; bad[0] = bad[0] == 'a' ? 'b' : 'a';
+        agent.receive(offer("0.3.0", bad), 8000);
+        agent.receive(chunk(0, 0, exe.size()), 8000);
+        rejected = false; try { agent.receive({Kind::update_done, {}}, 8000); } catch (const Error&) { rejected = true; }
+        check(rejected && sink.installed.empty(), "a damaged download is discarded");
+        agent.receive(offer("0.3.0", hex), 8000);
+        rejected = false; try { agent.receive(chunk(1, 0, 10), 8000); } catch (const Error&) { rejected = true; }
+        check(rejected, "out-of-order update data rejected");
+        check(compare_versions("0.10.0", "0.9.9") == 1 && compare_versions("0.2.1", "0.2.1") == 0, "versions compare numerically");
+        InputAgent old(sink, "Torre", "0.2.0", 100, 100);
+        Bytes hello = encode(Hello{"pc-controller", "0.4.30", "Air"}); hello[1] = static_cast<std::uint8_t>(wire_revision + 1);
+        auto reply = old.receive({Kind::hello, hello}, 0);
+        auto lease = old.receive({Kind::desktop_control, encode(DesktopControl{DesktopControl::Action::begin, 5, 0, 0})}, 0);
+        old.receive(offer("0.3.0", hex), 0); old.receive(chunk(0, 0, exe.size()), 0); old.receive({Kind::update_done, {}}, 0);
+        check(reply.size() == 1 && lease.empty() && sink.installed == exe, "a Mac with another protocol revision can only update the PC");
+    }
     agent.set_enabled(false, true);
     out = agent.receive({Kind::desktop_control, encode(DesktopControl{DesktopControl::Action::begin, 10, 0, 0})}, 8000);
     check(control(out).action == DesktopControl::Action::rejected, "lease refused while the mouse is disabled on the PC");

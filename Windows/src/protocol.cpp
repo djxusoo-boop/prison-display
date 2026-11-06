@@ -78,7 +78,7 @@ void video_valid(const VideoFrame& v) {
 } // namespace
 Bytes frame(const Packet& p) {
     const auto kind=static_cast<unsigned>(p.kind);
-    if (kind<1 || kind>18 || p.body.size()>=max_packet) throw Error("Invalid packet");
+    if (kind<1 || kind>24 || p.body.size()>=max_packet) throw Error("Invalid packet");
     Writer w; w.number(p.body.size()+1,4); w.number(kind,1); w.append(p.body); return w.bytes;
 }
 void Parser::feed(const Bytes& data,const std::function<void(Packet)>& receive) {
@@ -99,7 +99,7 @@ void Parser::feed(const Bytes& data,const std::function<void(Packet)>& receive) 
             if (!length || length>max_packet) throw Error("Invalid packet length");
             if (buffer_.size()!=length+4) continue;
             const auto kind=r.number(1);
-            if (kind<1 || kind>19) throw Error("Unknown packet kind");
+            if (kind<1 || kind>24) throw Error("Unknown packet kind");
             Packet packet{static_cast<Kind>(kind),r.bytes(r.remaining())}; buffer_.clear(); receive(std::move(packet));
         }
     } catch (...) { buffer_.clear(); failed_=true; throw; }

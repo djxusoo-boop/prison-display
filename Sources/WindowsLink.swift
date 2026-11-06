@@ -4,14 +4,15 @@ import Network
 import Security
 
 extension Wire {
-    // The PC app has its own version; only the protocol revision must match.
-    static func checkPCHello(_ data: Data) throws -> String {
+    // The PC app has its own version. Another protocol revision is accepted
+    // only to update it (sameRevision false).
+    static func checkPCHello(_ data: Data) throws -> (name: String, version: String, sameRevision: Bool) {
         var r = Reader(data)
-        guard try r.u16() == revision else { throw AireError("El PC tiene otra versión del protocolo. Actualiza PRISON DISPLAY en Windows.") }
+        let remoteRevision = try r.u16()
         guard data.count <= 512, let text = String(data: try r.rest(), encoding: .utf8) else { throw AireError("Saludo del PC inválido.") }
         let fields = text.split(separator: "|", omittingEmptySubsequences: false)
-        guard fields.count == 3, fields[0] == "pc" else { throw AireError("Ese equipo no es PRISON DISPLAY para Windows.") }
-        return try peerName(data)
+        guard fields.count == 3, fields[0] == "pc", let version = normalizedVersion(String(fields[1])) else { throw AireError("Ese equipo no es PRISON DISPLAY para Windows.") }
+        return (try peerName(data), version, remoteRevision == revision)
     }
 }
 
@@ -68,6 +69,11 @@ final class WindowsLink {
     let bridge = DesktopBridge()
     var onStatus: (String) -> Void = { _ in }
     var onConnected: (String?) -> Void = { _ in }
+    var onClipboard: ((Data) -> Void)?
+    // Newer Windows build carried by this Mac: (file, version).
+    var windowsUpdate: () -> (URL, String)? = { nil }
+    var streamUpdate: (URL, String, @escaping (Wire.Kind, Data) -> Void) throws -> Void = { _, _, _ in throw AireError("Sin actualizador.") }
+    func sendClipboard(_ data: Data) { queue.async { if self.greeted { self.peer?.send(.clipboard, data) } } }
     private let queue = DispatchQueue(label: "PrisonDisplay.windows-link", qos: .userInteractive)
     private var peer: Peer?
     private var greeted = false
@@ -128,7 +134,17 @@ final class WindowsLink {
             do {
                 if !self.greeted {
                     guard kind == .hello else { throw AireError("El PC no respondió como PRISON DISPLAY.") }
-                    let name = try Wire.checkPCHello(data)
+                    let hello = try Wire.checkPCHello(data), name = hello.name
+                    if let (file, version) = self.windowsUpdate(), AppVersion.compare(version, hello.version) > 0 {
+                        DispatchQueue.main.async { self.onStatus("El PC tiene PRISON DISPLAY \(hello.version). Enviándole la \(version); se reiniciará solo…") }
+                        let stream = self.streamUpdate
+                        DispatchQueue.global(qos: .userInitiated).async { [weak p] in
+                            do { try stream(file, version) { kind, data in p?.send(kind, data) } }
+                            catch { DispatchQueue.main.async { self.onStatus("No se pudo actualizar el PC: \(error)") } }
+                        }
+                        return
+                    }
+                    guard hello.sameRevision else { throw AireError("El PC tiene otra versión de PRISON DISPLAY y este Mac no lleva su actualización.") }
                     self.greeted = true
                     DispatchQueue.main.async {
                         self.bridge.connected = true; self.onConnected(name)
@@ -139,6 +155,8 @@ final class WindowsLink {
                     if message.action == .accepted, self.requested == message.token { self.token = message.token }
                     if message.action == .rejected, self.requested == message.token { self.token = nil; self.requested = nil }
                     DispatchQueue.main.async { self.bridge.reply(message) }
+                } else if kind == .clipboard {
+                    _ = try ClipboardPayload(data); self.onClipboard?(data)
                 } else if kind == .failure {
                     throw AireError("El PC: " + (String(data: data.prefix(512), encoding: .utf8) ?? "error"))
                 }

@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <openssl/evp.h>
+#include <sstream>
 
 namespace prison {
 namespace {
@@ -46,6 +48,30 @@ std::uint64_t modifier_mask(std::uint16_t code) {
     default: return 0;
     }
 }
+}
+
+int compare_versions(const std::string& a, const std::string& b) {
+    auto parts = [](const std::string& v) { std::vector<long> out; std::stringstream in(v); std::string item; while (std::getline(in, item, '.')) out.push_back(std::strtol(item.c_str(), nullptr, 10)); return out; };
+    const auto x = parts(a), y = parts(b);
+    for (std::size_t i = 0; i < std::max(x.size(), y.size()); ++i) {
+        const long l = i < x.size() ? x[i] : 0, r = i < y.size() ? y[i] : 0;
+        if (l != r) return l < r ? -1 : 1;
+    }
+    return 0;
+}
+namespace {
+std::string sha256_hex(const Bytes& data) {
+    unsigned char digest[32]; unsigned int length = 0;
+    if (EVP_Digest(data.data(), data.size(), digest, &length, EVP_sha256(), nullptr) != 1 || length != 32) throw Error("Digest failed");
+    static const char hex[] = "0123456789abcdef"; std::string out;
+    for (auto b : digest) { out.push_back(hex[b >> 4]); out.push_back(hex[b & 15]); }
+    return out;
+}
+}
+
+Bytes encode_clipboard_text(const std::string& text) {
+    if (text.empty() || text.size() > max_clipboard_text) throw Error("Invalid clipboard text");
+    Bytes out{1}; out.insert(out.end(), text.begin(), text.end()); return out;
 }
 
 std::optional<ScanKey> windows_key(std::uint16_t mac_code) {
@@ -103,15 +129,23 @@ void InputAgent::end_lease() {
     token_ = 0; expires_ = 0;
 }
 
-void InputAgent::disconnect() { end_lease(); greeted_ = false; peer_.clear(); }
+void InputAgent::disconnect() { end_lease(); greeted_ = false; update_only_ = false; updating_ = false; update_.clear(); peer_.clear(); }
 
 std::vector<Packet> InputAgent::receive(const Packet& packet, std::uint64_t now) {
     if (!greeted_) {
         if (packet.kind != Kind::hello) throw Error("Expected hello");
-        const auto hello = decode_hello(packet.body, "pc-controller", "");
+        // Another protocol revision can still update this app; nothing else.
+        Bytes body = packet.body;
+        if (body.size() >= 2) {
+            update_only_ = ((body[0] << 8) | body[1]) != wire_revision;
+            body[0] = static_cast<std::uint8_t>(wire_revision >> 8); body[1] = static_cast<std::uint8_t>(wire_revision & 255);
+        }
+        const auto hello = decode_hello(body, "pc-controller", "");
         greeted_ = true; peer_ = hello.name;
         return {{Kind::hello, encode(Hello{"pc", version_, name_})}};
     }
+    if (update_only_ && packet.kind != Kind::update_offer && packet.kind != Kind::update_chunk && packet.kind != Kind::update_done
+        && packet.kind != Kind::ping) return {};
     switch (packet.kind) {
     case Kind::ping: return {{Kind::pong, {}}};
     case Kind::pong: return {};
@@ -167,15 +201,55 @@ std::vector<Packet> InputAgent::receive(const Packet& packet, std::uint64_t now)
         }
         return {};
     }
+    case Kind::clipboard: {
+        if (packet.body.size() < 2 || packet.body.size() > max_clipboard_text + 1) throw Error("Invalid clipboard");
+        if (packet.body[0] == 1) sink_.set_clipboard(std::string(packet.body.begin() + 1, packet.body.end()));
+        else if (packet.body[0] != 2) throw Error("Invalid clipboard");
+        return {};
+    }
+    case Kind::update_offer: {
+        // "version|size|sha256" from the paired Mac; only a newer build.
+        const std::string text(packet.body.begin(), packet.body.end());
+        const auto a = text.find('|'), b = a == std::string::npos ? a : text.find('|', a + 1);
+        if (packet.body.size() > 256 || b == std::string::npos) throw Error("Invalid update offer");
+        update_version_ = text.substr(0, a); update_sha_ = text.substr(b + 1);
+        update_size_ = static_cast<std::size_t>(std::strtoull(text.substr(a + 1, b - a - 1).c_str(), nullptr, 10));
+        if (update_size_ == 0 || update_size_ > 64u * 1024 * 1024 || update_sha_.size() != 64 || compare_versions(update_version_, version_) <= 0) throw Error("Update not accepted");
+        update_.clear(); update_.reserve(update_size_); update_next_ = 0; updating_ = true;
+        return {};
+    }
+    case Kind::update_chunk: {
+        if (!updating_ || packet.body.size() < 5) throw Error("Unexpected update data");
+        std::uint32_t sequence = 0; for (int i = 0; i < 4; ++i) sequence = (sequence << 8) | packet.body[static_cast<std::size_t>(i)];
+        if (sequence != update_next_ || update_.size() + packet.body.size() - 4 > update_size_) throw Error("Update out of order");
+        update_.insert(update_.end(), packet.body.begin() + 4, packet.body.end()); ++update_next_;
+        return {};
+    }
+    case Kind::update_done: {
+        if (!updating_) throw Error("Unexpected update end");
+        updating_ = false;
+        if (update_.size() != update_size_ || sha256_hex(update_) != update_sha_) { update_.clear(); throw Error("Update damaged"); }
+        end_lease();
+        sink_.install_update(update_, update_version_);
+        update_.clear();
+        return {};
+    }
+    case Kind::update_request: return {};
     case Kind::pointer: case Kind::keyboard: return {}; // Never outside a lease.
     default: throw Error("Unexpected packet for the PC");
     }
 }
 
 std::vector<Packet> InputAgent::tick(std::uint64_t now) {
-    if (!token_ || now < expires_) return {};
+    std::vector<Packet> out;
+    if (greeted_) {
+        if (auto text = sink_.clipboard_changed(); text && !text->empty() && text->size() <= max_clipboard_text)
+            out.push_back({Kind::clipboard, encode_clipboard_text(*text)});
+    }
+    if (!token_ || now < expires_) return out;
     const auto token = token_;
     end_lease();
-    return {{Kind::desktop_control, encode(DesktopControl{DesktopControl::Action::rejected, token, 0, 0})}};
+    out.push_back({Kind::desktop_control, encode(DesktopControl{DesktopControl::Action::rejected, token, 0, 0})});
+    return out;
 }
 }

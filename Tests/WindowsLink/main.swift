@@ -18,6 +18,7 @@ let lock = NSLock()
 func lines() -> [String] { lock.lock(); defer { lock.unlock() }; return output }
 let agent = Process(); agent.executableURL = URL(fileURLWithPath: host); agent.arguments = [key, String(port)]
 let pipe = Pipe(); agent.standardOutput = pipe
+let input = Pipe(); agent.standardInput = input
 var partial = ""
 pipe.fileHandleForReading.readabilityHandler = { handle in
     let text = String(data: handle.availableData, encoding: .utf8) ?? ""
@@ -45,6 +46,14 @@ link.onStatus = { statuses.append($0) }; link.onConnected = { connectedName = $0
 try link.connect(host: "127.0.0.1", port: port, key: key, startBridge: false)
 check(pump({ link.bridge.connected }) && connectedName == "Torre simulada", "Mac link authenticates with TLS-PSK and the PC hello")
 check(pump({ lines().contains { $0.contains("Conectado con") } }), "PC shows the connected Mac")
+var fromPC: [String] = []
+link.onClipboard = { data in if let text = (try? ClipboardPayload(data))?.text { DispatchQueue.main.async { fromPC.append(text) } } }
+link.sendClipboard(try ClipboardPayload(text: "Copiado en el Air · ñ €").serialized)
+check(pump({ lines().contains("CLIPBOARD Copiado en el Air · ñ €") }), "text copied on the Mac is pasted on the PC")
+link.sendClipboard(try ClipboardPayload(kind: .png, data: Data([0x89, 0x50, 0x4E, 0x47, 1, 2, 3])).serialized)
+input.fileHandleForWriting.write(Data("COPY Copiado en Windows\n".utf8))
+check(pump({ fromPC == ["Copiado en Windows"] }), "text copied on the PC reaches the Mac (an image did not break the link)")
+check(link.bridge.connected, "clipboard traffic keeps the connection")
 
 func mouse(_ type: CGEventType, at point: CGPoint, dx: Double = 0, dy: Double = 0) -> CGEvent {
     let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)!
@@ -91,6 +100,27 @@ _ = link.bridge.handle(.mouseMoved, mouse(.mouseMoved, at: CGPoint(x: 1439, y: 4
 check(pump({ link.bridge.remote }), "crossing again after the cooldown")
 _ = link.bridge.handle(.keyDown, key(0, down: true))
 check(pump({ lines().contains("EVENT key 1E down") }), "key held on the PC")
+// Automatic PC update: the Mac carries a newer Windows build.
+let fakeExe = FileManager.default.temporaryDirectory.appendingPathComponent("fake-pc-\(getpid()).exe")
+try Data((0..<2_300_000).map { UInt8($0 % 251) }).write(to: fakeExe)
+let updater = WindowsLink(); configure(updater)
+updater.windowsUpdate = { (fakeExe, "9.9.9") }
+updater.streamUpdate = { file, version, send in
+    let bytes = try Data(contentsOf: file)
+    var hash = [UInt8](repeating: 0, count: 32)
+    let digest = Process(); digest.executableURL = URL(fileURLWithPath: "/usr/bin/shasum"); digest.arguments = ["-a", "256", file.path]
+    let out = Pipe(); digest.standardOutput = out; try digest.run(); digest.waitUntilExit()
+    let hex = String(String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)!.prefix(64)); _ = hash; hash = []
+    send(.updateOffer, try UpdateOffer(version: version, size: bytes.count, sha256: hex).data)
+    var seq: UInt32 = 0, offset = 0
+    while offset < bytes.count { let end = min(bytes.count, offset + UpdateOffer.chunkSize); send(.updateChunk, Wire.updateChunk(sequence: seq, bytes.subdata(in: offset..<end))); seq += 1; offset = end }
+    send(.updateDone, Data())
+}
+var updaterStatus = ""; updater.onStatus = { updaterStatus = $0 }
+try updater.connect(host: "127.0.0.1", port: port, key: key, startBridge: false)
+check(pump({ lines().contains("UPDATE 9.9.9 2300000") }, timeout: 10), "an older PC receives and verifies the newer Windows build")
+check(updaterStatus.contains("9.9.9") && !updater.bridge.connected, "the Mac reports the update and does not take control of an outdated PC")
+updater.disconnect(); try? FileManager.default.removeItem(at: fakeExe)
 agent.terminate(); agent.waitUntilExit()
 check(pump({ !link.bridge.remote && !link.bridge.connected }, timeout: 5), "PC closing returns control to the Mac")
 let wrong = WindowsLink(); configure(wrong)

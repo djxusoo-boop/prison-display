@@ -6,6 +6,7 @@
 #include <wincrypt.h>
 #include <shlobj.h>
 #include <atomic>
+#include <optional>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -17,9 +18,11 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"PrisonDisplayWindows";
-constexpr wchar_t kVersion[] = L"0.2.0";
-constexpr char kVersionUtf8[] = "0.2.0";
+constexpr wchar_t kVersion[] = L"0.2.1";
+constexpr char kVersionUtf8[] = "0.2.1";
 constexpr UINT kStatusMessage = WM_APP + 1;
+constexpr UINT kSetClipboard = WM_APP + 2;
+HWND g_window = nullptr;
 
 std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
@@ -58,6 +61,25 @@ struct Win32Sink final : prison::InputSink {
         if (vertical) { INPUT input{}; input.type = INPUT_MOUSE; input.mi.dwFlags = MOUSEEVENTF_WHEEL; input.mi.mouseData = static_cast<DWORD>(vertical); send(input); }
         if (horizontal) { INPUT input{}; input.type = INPUT_MOUSE; input.mi.dwFlags = MOUSEEVENTF_HWHEEL; input.mi.mouseData = static_cast<DWORD>(horizontal); send(input); }
     }
+    // Writing needs a window owned by the interface thread.
+    void set_clipboard(const std::string& text) override {
+        if (g_window) SendMessageW(g_window, kSetClipboard, 0, reinterpret_cast<LPARAM>(&text));
+    }
+    std::optional<std::string> clipboard_changed() override {
+        const DWORD sequence = GetClipboardSequenceNumber();
+        if (sequence == seen_) return std::nullopt;
+        seen_ = sequence;
+        if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(nullptr)) return std::nullopt;
+        std::optional<std::string> result;
+        if (HANDLE handle = GetClipboardData(CF_UNICODETEXT)) {
+            if (const auto* text = static_cast<const wchar_t*>(GlobalLock(handle))) { result = narrow(text); GlobalUnlock(handle); }
+        }
+        CloseClipboard();
+        return result;
+    }
+    std::atomic<DWORD> seen_{GetClipboardSequenceNumber()};
+    // Replace this .exe with the verified build from the Mac and restart.
+    void install_update(const prison::Bytes& data, const std::string& version) override;
     void key(prison::ScanKey key, bool down) override {
         INPUT input{}; input.type = INPUT_KEYBOARD;
         input.ki.wScan = key.scan;
@@ -114,6 +136,33 @@ std::wstring local_addresses() {
 }
 
 Win32Sink g_sink;
+void set_status(const std::string& text);
+std::wstring own_path() {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length < path.size()) { path.resize(length); return path; }
+        path.resize(path.size() * 2);
+    }
+}
+void Win32Sink::install_update(const prison::Bytes& data, const std::string& version) {
+    const auto current = own_path(), fresh = current + L".nuevo", old = current + L".anterior";
+    {
+        std::ofstream out(std::filesystem::path(fresh), std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        if (!out) { set_status("No se pudo guardar la actualización."); return; }
+    }
+    DeleteFileW(old.c_str());
+    if (!MoveFileExW(current.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) { set_status("No se pudo sustituir la app (¿carpeta protegida?)."); return; }
+    if (!MoveFileExW(fresh.c_str(), current.c_str(), MOVEFILE_REPLACE_EXISTING)) { MoveFileExW(old.c_str(), current.c_str(), 0); set_status("No se pudo sustituir la app."); return; }
+    set_status("Actualizado a " + version + ". Reiniciando…");
+    STARTUPINFOW startup{}; startup.cb = sizeof startup; PROCESS_INFORMATION process{};
+    std::wstring command = L"\"" + current + L"\" --tras-actualizar";
+    if (CreateProcessW(current.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process)) {
+        CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    }
+    if (g_window) PostMessageW(g_window, WM_CLOSE, 0, 0);
+}
 std::unique_ptr<prison::InputAgent> g_agent;
 std::unique_ptr<prison::AgentServer> g_server;
 std::atomic<bool> g_stop{false};
@@ -121,7 +170,6 @@ std::thread g_thread;
 std::mutex g_status_mutex;
 std::wstring g_status = L"Preparando…";
 std::wstring g_key, g_addresses, g_name;
-HWND g_window = nullptr;
 
 void set_status(const std::string& text) {
     { std::lock_guard<std::mutex> lock(g_status_mutex); g_status = widen(text); }
@@ -163,6 +211,21 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     }
     case kStatusMessage: InvalidateRect(window, nullptr, FALSE); return 0;
+    case kSetClipboard: {
+        const auto& text = *reinterpret_cast<const std::string*>(lparam);
+        const std::wstring wide = widen(text);
+        if (!OpenClipboard(window)) return 0;
+        EmptyClipboard();
+        if (HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t))) {
+            if (auto* target = static_cast<wchar_t*>(GlobalLock(memory))) {
+                std::copy(wide.begin(), wide.end(), target); target[wide.size()] = L'\0'; GlobalUnlock(memory);
+                if (!SetClipboardData(CF_UNICODETEXT, memory)) GlobalFree(memory);
+            } else GlobalFree(memory);
+        }
+        CloseClipboard();
+        g_sink.seen_ = GetClipboardSequenceNumber(); // Not echoed back to the Mac.
+        return 0;
+    }
     case WM_DISPLAYCHANGE: {
         std::uint32_t width = 0, height = 0; screen_size(width, height);
         if (g_server) g_server->with_agent([&](prison::InputAgent& agent) { agent.set_screen(width, height); });
@@ -184,8 +247,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     if (auto set = reinterpret_cast<Awareness>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext")))
         set(reinterpret_cast<HANDLE>(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     WSADATA wsa{}; if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return 1;
+    DeleteFileW((own_path() + L".anterior").c_str()); // Left by the previous update.
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\PrisonDisplayWindowsInput");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    // After an update the previous copy is still closing: wait for it.
+    DWORD owned = WAIT_OBJECT_0;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) owned = WaitForSingleObject(single, 10000);
+    if (owned != WAIT_OBJECT_0 && owned != WAIT_ABANDONED) {
         MessageBoxW(nullptr, L"PRISON DISPLAY ya está abierto en este PC.", L"PRISON DISPLAY", MB_ICONINFORMATION);
         return 0;
     }
