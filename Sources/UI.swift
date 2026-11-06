@@ -1359,6 +1359,162 @@ final class ReceiverEngine {
 }
 #endif
 
+// One picture of every screen and computer: the Mac's displays as macOS
+// arranges them (built-in, PRISON DISPLAY screens shown on the Pro and the iMac,
+// HDMI) and the Windows PC on the side the mouse crosses to it. Drag a screen
+// to rearrange it (it snaps against its neighbours) or drag the PC to another
+// side. Main thread only; the data source is replaceable for previews/tests.
+final class DeviceMapView: NSView {
+    struct Screen: Equatable { let id: CGDirectDisplayID; let bounds: CGRect; let title: String; let detail: String; let main: Bool; let virtual: Bool }
+    var screens: () -> [Screen] = DeviceMapView.liveScreens
+    var pcName: String? { didSet { needsDisplay = true } }
+    var pcEdge = DesktopEdge.right { didSet { needsDisplay = true } }
+    var onMoveScreen: (CGDirectDisplayID, CGPoint) -> Void = DeviceMapView.applyOrigin
+    var onPCEdge: (DesktopEdge) -> Void = { _ in }
+    var screenNames: (Screen) -> String? = { _ in nil }
+    private var current: [Screen] = []
+    private var dragging: (index: Int?, pc: Bool, start: CGPoint, offset: CGPoint)?
+    private var dragPoint: CGPoint?
+    private var timer: Timer?
+    override var isFlipped: Bool { true }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow(); reload()
+        timer?.invalidate()
+        guard window != nil else { return }
+        let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in if self?.dragging == nil { self?.reload() } }
+        RunLoop.main.add(t, forMode: .common); timer = t
+    }
+    func reload() { let next = screens(); if next != current { current = next; needsDisplay = true } }
+
+    static func screenLabel(_ slot: Int) -> String {
+        let name = UserDefaults.standard.string(forKey: "PrisonDisplay.workspace.screenName.\(slot + 1)")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (name?.isEmpty == false ? name! : "Pantalla \(slot + 1)")
+    }
+    static func liveScreens() -> [Screen] {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).compactMap { id in
+            let b = CGDisplayBounds(id); guard !b.isEmpty else { return nil }
+            let virtual = CGDisplayVendorNumber(id) == 0xA1DE, product = CGDisplayModelNumber(id)
+            let title: String
+            if CGDisplayIsBuiltin(id) != 0 { title = "Este Mac" }
+            else if virtual && product == 1 { title = DeviceMapView.screenLabel(0) }
+            else if virtual && product == 2 { title = DeviceMapView.screenLabel(1) }
+            else if virtual { title = "HDMI ampliado" }
+            else { title = "Monitor" }
+            return Screen(id: id, bounds: b, title: title, detail: "\(Int(b.width)) × \(Int(b.height))", main: CGDisplayIsMain(id) != 0, virtual: virtual)
+        }
+    }
+    static func applyOrigin(_ id: CGDirectDisplayID, _ origin: CGPoint) {
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        guard CGConfigureDisplayOrigin(config, id, Int32(origin.x.rounded()), Int32(origin.y.rounded())) == .success else { CGCancelDisplayConfiguration(config); return }
+        // PRISON DISPLAY screens remember their place themselves; real monitors keep it permanently.
+        CGCompleteDisplayConfiguration(config, CGDisplayVendorNumber(id) == 0xA1DE ? .forSession : .permanently)
+    }
+
+    // Geometry: fit every screen plus a PC slot into the view.
+    private var union: CGRect { current.reduce(CGRect.null) { $0.union($1.bounds) } }
+    private func transform() -> (scale: CGFloat, origin: CGPoint) {
+        let u = union.isNull ? CGRect(x: 0, y: 0, width: 1920, height: 1080) : union
+        let pcSpace: CGFloat = pcName == nil ? 0 : max(u.width, u.height) * 0.28
+        let world = u.insetBy(dx: -max(pcSpace, u.width * 0.35), dy: -max(pcSpace * 0.6, u.height * 0.3))
+        let area = bounds.insetBy(dx: 16, dy: 16)
+        let scale = min(area.width / world.width, area.height / world.height)
+        let size = CGSize(width: world.width * scale, height: world.height * scale)
+        return (scale, CGPoint(x: area.midX - size.width / 2 - world.minX * scale, y: area.midY - size.height / 2 - world.minY * scale))
+    }
+    private func viewRect(_ r: CGRect) -> CGRect {
+        let t = transform(); return CGRect(x: t.origin.x + r.minX * t.scale, y: t.origin.y + r.minY * t.scale, width: r.width * t.scale, height: r.height * t.scale)
+    }
+    private func pcRect() -> CGRect? {
+        guard pcName != nil, !union.isNull else { return nil }
+        let u = union, w = max(u.width, u.height) * 0.22, h = w * 0.62, gap = w * 0.08
+        let r: CGRect
+        switch pcEdge {
+        case .right: r = CGRect(x: u.maxX + gap, y: u.midY - h / 2, width: w, height: h)
+        case .left: r = CGRect(x: u.minX - gap - w, y: u.midY - h / 2, width: w, height: h)
+        case .above: r = CGRect(x: u.midX - w / 2, y: u.minY - gap - h, width: w, height: h)
+        case .below: r = CGRect(x: u.midX - w / 2, y: u.maxY + gap, width: w, height: h)
+        }
+        return viewRect(r)
+    }
+    // Place a moved screen against the nearest edge of another one.
+    static func snap(_ moving: CGRect, against others: [CGRect]) -> CGPoint {
+        var best = moving.origin, bestDistance = CGFloat.infinity
+        for o in others {
+            let candidates = [
+                CGPoint(x: o.maxX, y: min(max(moving.minY, o.minY - moving.height + 1), o.maxY - 1)),
+                CGPoint(x: o.minX - moving.width, y: min(max(moving.minY, o.minY - moving.height + 1), o.maxY - 1)),
+                CGPoint(x: min(max(moving.minX, o.minX - moving.width + 1), o.maxX - 1), y: o.maxY),
+                CGPoint(x: min(max(moving.minX, o.minX - moving.width + 1), o.maxX - 1), y: o.minY - moving.height)]
+            for c in candidates {
+                let r = CGRect(origin: c, size: moving.size)
+                guard !others.contains(where: { $0.intersects(r.insetBy(dx: 1, dy: 1)) }) else { continue }
+                let d = hypot(c.x - moving.minX, c.y - moving.minY)
+                if d < bestDistance { bestDistance = d; best = c }
+            }
+        }
+        return CGPoint(x: best.x.rounded(), y: best.y.rounded())
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(calibratedWhite: 0.10, alpha: 1).setFill(); NSBezierPath(roundedRect: bounds, xRadius: 12, yRadius: 12).fill()
+        for (index, screen) in current.enumerated() {
+            var r = viewRect(screen.bounds)
+            if let drag = dragging, drag.index == index, let p = dragPoint { r.origin = CGPoint(x: p.x - drag.offset.x, y: p.y - drag.offset.y) }
+            drawBox(r.insetBy(dx: 2, dy: 2), title: screen.title, detail: screen.detail, accent: screen.main ? prisonAccent : (screen.virtual ? NSColor(calibratedRed: 0.35, green: 0.30, blue: 0.62, alpha: 1) : NSColor(calibratedWhite: 0.32, alpha: 1)), menuBar: screen.main)
+        }
+        if var r = pcRect(), let name = pcName {
+            if let drag = dragging, drag.pc, let p = dragPoint { r.origin = CGPoint(x: p.x - drag.offset.x, y: p.y - drag.offset.y) }
+            drawBox(r, title: name, detail: "PC con Windows", accent: NSColor(calibratedRed: 0.10, green: 0.45, blue: 0.75, alpha: 1), menuBar: false)
+        }
+    }
+    private func drawBox(_ r: CGRect, title: String, detail: String, accent: NSColor, menuBar: Bool) {
+        accent.withAlphaComponent(0.85).setFill(); NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6).fill()
+        NSColor.white.withAlphaComponent(0.35).setStroke(); let border = NSBezierPath(roundedRect: r, xRadius: 6, yRadius: 6); border.lineWidth = 1; border.stroke()
+        if menuBar { NSColor.white.withAlphaComponent(0.8).setFill(); NSBezierPath(rect: CGRect(x: r.minX + 6, y: r.minY + 5, width: r.width - 12, height: 3)).fill() }
+        let size = max(9, min(13, r.height / 5))
+        let p = NSMutableParagraphStyle(); p.alignment = .center; p.lineBreakMode = .byTruncatingTail
+        let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: NSColor.white, .paragraphStyle: p]
+        let b: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size - 2), .foregroundColor: NSColor.white.withAlphaComponent(0.75), .paragraphStyle: p]
+        (title as NSString).draw(in: CGRect(x: r.minX + 4, y: r.midY - size * 1.1, width: r.width - 8, height: size * 1.3), withAttributes: a)
+        (detail as NSString).draw(in: CGRect(x: r.minX + 4, y: r.midY + 1, width: r.width - 8, height: size * 1.2), withAttributes: b)
+    }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if let r = pcRect(), r.contains(p) { dragging = (nil, true, p, CGPoint(x: p.x - r.minX, y: p.y - r.minY)); return }
+        for (index, screen) in current.enumerated().reversed() where !screen.main {
+            let r = viewRect(screen.bounds)
+            if r.contains(p) { dragging = (index, false, p, CGPoint(x: p.x - r.minX, y: p.y - r.minY)); return }
+        }
+    }
+    override func mouseDragged(with event: NSEvent) { guard dragging != nil else { return }; dragPoint = convert(event.locationInWindow, from: nil); needsDisplay = true }
+    override func mouseUp(with event: NSEvent) {
+        defer { dragging = nil; dragPoint = nil; needsDisplay = true }
+        guard let drag = dragging, let p = dragPoint, hypot(p.x - drag.start.x, p.y - drag.start.y) > 4 else { return }
+        let t = transform()
+        if drag.pc {
+            let world = CGPoint(x: (p.x - t.origin.x) / t.scale, y: (p.y - t.origin.y) / t.scale), u = union
+            let dx = world.x < u.minX ? u.minX - world.x : (world.x > u.maxX ? world.x - u.maxX : 0)
+            let dy = world.y < u.minY ? u.minY - world.y : (world.y > u.maxY ? world.y - u.maxY : 0)
+            let edge: DesktopEdge = dx >= dy ? (world.x < u.midX ? .left : .right) : (world.y < u.midY ? .above : .below)
+            pcEdge = edge; onPCEdge(edge); return
+        }
+        guard let index = drag.index else { return }
+        let screen = current[index]
+        let origin = CGPoint(x: (p.x - drag.offset.x - t.origin.x) / t.scale, y: (p.y - drag.offset.y - t.origin.y) / t.scale)
+        let others = current.enumerated().filter { $0.offset != index }.map { $0.element.bounds }
+        let snapped = DeviceMapView.snap(CGRect(origin: origin, size: screen.bounds.size), against: others)
+        onMoveScreen(screen.id, snapped)
+        current[index] = Screen(id: screen.id, bounds: CGRect(origin: snapped, size: screen.bounds.size), title: screen.title, detail: screen.detail, main: screen.main, virtual: screen.virtual)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.reload() }
+    }
+    deinit { timer?.invalidate() }
+}
+
 // Automatic updates between paired computers. When versions differ, the older
 // app asks the newer one for its build, verifies that it is signed with the very
 // same identity (designated requirement) and replaces itself. The sending Mac
@@ -1757,6 +1913,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let quality = PrisonPopUpButton()
     let output = PrisonPopUpButton()
     let cursorStyle = PrisonPopUpButton()
+    let deviceMap = DeviceMapView()
     let localDisplay = PrisonPopUpButton()
     let localResolution = PrisonPopUpButton()
     let localRefresh = PrisonSecondaryButton(title: "Actualizar", target: nil, action: nil)
@@ -1908,6 +2065,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsState.font = .systemFont(ofSize: 12); settingsState.textColor = prisonSecondaryText
         settingsState.widthAnchor.constraint(equalTo: tools.widthAnchor).isActive = true
         if screenSlot == 0 {
+            let map = card("MAPA DE PANTALLAS Y EQUIPOS", in: root)
+            map.addArrangedSubview(deviceMap)
+            deviceMap.translatesAutoresizingMaskIntoConstraints = false
+            deviceMap.widthAnchor.constraint(equalTo: map.widthAnchor).isActive = true
+            deviceMap.heightAnchor.constraint(equalToConstant: 230).isActive = true
+            addText("Arrastra una pantalla para colocarla junto a otra; el ratón pasará por ese borde. Arrastra el PC al lado por el que quieres cruzar a él.", to: map)
             let local = card("MONITOR HDMI CON MÁS ESPACIO", in: root)
             localDisplay.target = self; localDisplay.action = #selector(localMonitorChanged)
             localResolution.target = self; localResolution.action = #selector(localResolutionChanged)
@@ -2548,7 +2711,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         link.streamUpdate = { file, version, send in try AppUpdater.stream(file, version: version, send: send) }
         link.onClipboard = { data in ClipboardSync.shared.receive(data, from: pcClipboard) }
         link.onStatus = { [weak self] text in self?.pcStatus.stringValue = text }
-        link.onConnected = { [weak self] name in self?.pcConnect.title = name == nil ? "Conectar" : "Conectado · \(name!)" }
+        link.onConnected = { [weak self] name in
+            self?.pcConnect.title = name == nil ? "Conectar" : "Conectado · \(name!)"
+            if let name = name { self?.deviceMap.pcName = name; UserDefaults.standard.set(name, forKey: "PrisonDisplay.pc.name") }
+        }
+        deviceMap.pcName = saved.enabled ? (UserDefaults.standard.string(forKey: "PrisonDisplay.pc.name") ?? "PC") : nil
+        deviceMap.pcEdge = DesktopEdge(rawValue: saved.edge) ?? .right
+        deviceMap.onPCEdge = { [weak self] edge in self?.pcEdge.selectItem(at: edge.rawValue); self?.changePCEdge() }
         link.bridge.onDisabled = { [weak self] in self?.pcStatus.stringValue = "macOS pausó el control del PC. Pulsa Conectar para reanudarlo." }
         // Reconnect a saved PC after launch; reading the key may need the Keychain.
         if saved.enabled, !CommandLine.arguments.contains("--layout-preview") {
@@ -2620,10 +2789,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func disconnectPC() {
         WindowsLink.shared.disconnect()
         var settings = PCLinkSettings.load(readKey: false); settings.enabled = false; settings.save()
+        deviceMap.pcName = nil
         pcDisconnect.isEnabled = false; pcStatus.stringValue = "Desconectado del PC. El ratón y el teclado se quedan en este Mac."
     }
     @objc func changePCEdge() {
         WindowsLink.shared.bridge.leave(); WindowsLink.shared.bridge.edge = DesktopEdge(rawValue: pcEdge.indexOfSelectedItem) ?? .right
+        deviceMap.pcEdge = WindowsLink.shared.bridge.edge
         var settings = PCLinkSettings.load(readKey: false); settings.edge = pcEdge.indexOfSelectedItem; settings.save()
     }
     #endif

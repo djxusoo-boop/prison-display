@@ -36,6 +36,8 @@ build/ContinuousTests
 xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/Clipboard/main.swift -o build/ClipboardTests
 build/ClipboardTests
 xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/Update/main.swift -o build/UpdateTests
+xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D SENDER "${common[@]}" Tests/Live/CaptureStub.swift build/VirtualDisplay-arm64.o -import-objc-header Sources/VirtualDisplay.h Tests/DeviceMap/main.swift -o build/DeviceMapTests
+build/DeviceMapTests build/DeviceMap-preview.png
 build/UpdateTests
 /bin/zsh Tests/Presentation/run.sh
 /bin/zsh Tests/Safety/Sender/run.sh

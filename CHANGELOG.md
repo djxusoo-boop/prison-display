@@ -1,3 +1,7 @@
+## 0.4.26 · Emparejar el PC y mapa de pantallas
+- PC con Windows (0.2.2): «Buscar y emparejar» lo encuentra en la red; los dos equipos muestran el mismo código de 6 cifras y la clave llega cifrada. Ya no hay que escribir la dirección ni la clave.
+- Mapa de pantallas y equipos: el Air, las pantallas del Pro y del iMac, el HDMI y el PC en un dibujo; arrastra una pantalla para colocarla (se ajusta al borde de otra) o el PC al lado por el que cruzar.
+
 ## 0.4.25 · Actualización automática y portapapeles compartido
 - Actualización automática: si dos equipos tienen versiones distintas, el más nuevo envía su versión al otro. El Mac que la recibe comprueba que está firmada con la misma identidad, la instala y se reinicia; la copia anterior queda oculta junto a la app. El Air lleva dentro la app del iMac y la de Windows, y actualiza también el PC.
 - Portapapeles compartido entre Air, Pro, iMac y PC: copia en uno y pega en otro (texto; imágenes entre Mac). Las contraseñas marcadas por gestores no se comparten. Interruptor en la barra lateral.
