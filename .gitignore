@@ -1,4 +1,8 @@
 build/
 outputs/
+.signing
 .signing/
 ssh-access/
+Signing/certificate.der
+Windows/build/
+.DS_Store
