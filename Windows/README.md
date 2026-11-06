@@ -1,4 +1,4 @@
-# PRISON DISPLAY Windows · 0.2.1
+# PRISON DISPLAY Windows · 0.3.0
 
 App para el PC con Windows: **recibe el ratón y el teclado del Mac**. Lleva el
 ratón del Air al borde elegido de sus pantallas y pasa al PC con el teclado;
@@ -14,12 +14,13 @@ vuelve por el mismo borde o con ⌃⌥Esc en el Mac.
   Si el Mac deja de responder 3 s, se sueltan todas las teclas y botones.
 - Portapapeles compartido de texto con los Mac.
 - Actualización automática: el Air envía la versión nueva, se verifica su SHA-256, el .exe se sustituye y se reinicia. Funciona aunque cambie la revisión del protocolo.
+- Interfaz por apartados (Inicio, Conectar con el Mac, Opciones), bandeja del sistema, abrir al iniciar Windows, emparejamiento con código de 6 cifras.
 - Pendiente: ver la pantalla del Mac en Windows (captura y vídeo), instalador.
 
 ## Compilar
 
 ```text
-cmake -S Windows -B Windows/build/windows -DCMAKE_TOOLCHAIN_FILE=<llvm-mingw.cmake> \
+cmake -S Windows -B Windows/build/windows -DCMAKE_TOOLCHAIN_FILE=<llvm-mingw.cmake con CMAKE_RC_COMPILER=x86_64-w64-mingw32-windres> \
   -DOPENSSL_ROOT_DIR=<openssl-win-x86_64> -DOPENSSL_USE_STATIC_LIBS=TRUE -DCMAKE_EXE_LINKER_FLAGS=-static
 cmake --build Windows/build/windows
 ```

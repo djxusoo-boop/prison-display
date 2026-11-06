@@ -78,8 +78,7 @@ struct DisplayResolutionProfile: Equatable {
     static let local = [
         DisplayResolutionProfile(title: "2560 × 1440", width: 2560, height: 1440, recommendedFPS: 60),
         DisplayResolutionProfile(title: "3200 × 1800", width: 3200, height: 1800, recommendedFPS: 60),
-        DisplayResolutionProfile(title: "3840 × 2160 · 4K", width: 3840, height: 2160, recommendedFPS: 60),
-        DisplayResolutionProfile(title: "5120 × 2880 · 5K", width: 5120, height: 2880, recommendedFPS: 60)
+        DisplayResolutionProfile(title: "3840 × 2160 · 4K", width: 3840, height: 2160, recommendedFPS: 60)
     ]
     // Exact fractions keep common sizes round (1920 × 4/3 = 2560).
     static let localScales: [(numerator: Int, denominator: Int, label: String)] = [
@@ -94,7 +93,10 @@ struct DisplayResolutionProfile: Equatable {
         for scale in localScales {
             let width = (nativeWidth * scale.numerator / scale.denominator + 4) / 8 * 8
             let height = (width * nativeHeight / nativeWidth + 1) / 2 * 2
-            guard width <= 5120, height <= 2880, height >= 400, !result.contains(where: { $0.width == width }) else { continue }
+            // Measured on an M4 MacBook Air: mirroring stays in hardware (smooth
+            // pointer) up to 3840 × 2160 of desktop; larger ones fall back to
+            // software scaling and the mouse lags.
+            guard width * height <= 3840 * 2160, height >= 400, !result.contains(where: { $0.width == width }) else { continue }
             result.append(DisplayResolutionProfile(title: "\(width) × \(height) · ×\(scale.label) de espacio", width: width, height: height, recommendedFPS: 60))
         }
         return result.isEmpty ? local : result

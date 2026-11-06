@@ -1,3 +1,9 @@
+## 0.4.27 · Todo en su sitio · Windows 0.3.0
+- Barra lateral por apartados: PANTALLAS (Enviar, Añadir, Recibir), HERRAMIENTAS (Mapa de pantallas, Monitor HDMI, PC con Windows) y OPCIONES. Cada herramienta tiene su propia página con instrucciones de 1-2-3.
+- Monitor HDMI: se usa el modo nativo real del monitor y solo se ofrecen escritorios hasta 3840 × 2160, que el Mac reduce por hardware (el ratón va fluido). Si un tamaño no va por hardware, se deshace y se avisa.
+- PC con Windows: «Buscar y emparejar» primero; la conexión manual queda como alternativa.
+- Windows 0.3.0: interfaz como la del Mac (Inicio, Conectar con el Mac, Opciones), interruptores de ratón, teclado y portapapeles, abrir al iniciar Windows, bandeja del sistema con avisos, copiar o renovar la clave e icono propio.
+
 ## 0.4.26 · Emparejar el PC y mapa de pantallas
 - PC con Windows (0.2.2): «Buscar y emparejar» lo encuentra en la red; los dos equipos muestran el mismo código de 6 cifras y la clave llega cifrada. Ya no hay que escribir la dirección ni la clave.
 - Mapa de pantallas y equipos: el Air, las pantallas del Pro y del iMac, el HDMI y el PC en un dibujo; arrastra una pantalla para colocarla (se ajusta al borde de otra) o el PC al lado por el que cruzar.

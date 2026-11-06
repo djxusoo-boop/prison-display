@@ -2065,13 +2065,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsState.font = .systemFont(ofSize: 12); settingsState.textColor = prisonSecondaryText
         settingsState.widthAnchor.constraint(equalTo: tools.widthAnchor).isActive = true
         if screenSlot == 0 {
-            let map = card("MAPA DE PANTALLAS Y EQUIPOS", in: root)
+            // In the main window each tool has its own page; standalone builds keep one list.
+            let mapRoot = hosted ? makeToolPage(&mapPage) : root
+            let hdmiRoot = hosted ? makeToolPage(&hdmiPage) : root
+            let map = card("MAPA DE PANTALLAS Y EQUIPOS", in: mapRoot)
             map.addArrangedSubview(deviceMap)
             deviceMap.translatesAutoresizingMaskIntoConstraints = false
             deviceMap.widthAnchor.constraint(equalTo: map.widthAnchor).isActive = true
-            deviceMap.heightAnchor.constraint(equalToConstant: 230).isActive = true
-            addText("Arrastra una pantalla para colocarla junto a otra; el ratón pasará por ese borde. Arrastra el PC al lado por el que quieres cruzar a él.", to: map)
-            let local = card("MONITOR HDMI CON MÁS ESPACIO", in: root)
+            deviceMap.heightAnchor.constraint(equalToConstant: 300).isActive = true
+            addText("Así están colocadas tus pantallas y tu PC. Arrastra una pantalla para pegarla a otra: el ratón pasará por ese borde. Arrastra el PC al lado por el que quieres cruzar a él.", to: map)
+            let local = card("MONITOR HDMI CON MÁS ESPACIO", in: hdmiRoot)
+            addText("1. Conecta el monitor y pulsa Actualizar.  2. Elige cuánto espacio quieres.  3. Crear y mostrar. Para volver a la normalidad, Detener.", to: local)
             localDisplay.target = self; localDisplay.action = #selector(localMonitorChanged)
             localResolution.target = self; localResolution.action = #selector(localResolutionChanged)
             row("Monitor", localDisplay, in: local)
@@ -2084,10 +2088,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             localStatus.setContentCompressionResistancePriority(.required, for: .vertical)
             local.addArrangedSubview(localStatus)
             localStatus.widthAnchor.constraint(equalTo: local.widthAnchor).isActive = true
-            addText("Crea un escritorio virtual más grande que la resolución del monitor (hasta 5K) y el monitor lo muestra reducido. No añade píxeles físicos: el texto se ve más pequeño, pero caben más ventanas. La pantalla del MacBook permanece disponible para detenerlo.", to: local)
+            addText("El monitor muestra reducido un escritorio más grande que su resolución. No añade píxeles: el texto se ve más pequeño, pero caben más ventanas. Solo se ofrecen tamaños que el Mac reduce por hardware, para que el ratón vaya fluido. Si usas BetterDisplay u otra app parecida con ese monitor, desactívala antes.", to: local)
             refreshLocalDisplays()
             #if UNIFIED && !LEGACY
-            buildPCCard(in: root)
+            buildPCCard(in: hosted ? makeToolPage(&pcPage) : root)
             #endif
         }
         #else
@@ -2366,6 +2370,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         label.setContentCompressionResistancePriority(.required, for: .vertical)
         stack.addArrangedSubview(label)
         if stack.edgeInsets.top > 0 { stack.setCustomSpacing(6, after: label) }
+    }
+    // A separate scrolling page (map, HDMI, PC) shown from the main window's sidebar.
+    private(set) var mapPage: NSView?, hdmiPage: NSView?, pcPage: NSView?
+    private func makeToolPage(_ page: inout NSView?) -> NSStackView {
+        let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        let root = PrisonStack(); root.orientation = .vertical; root.alignment = .leading; root.spacing = 16
+        root.edgeInsets = NSEdgeInsets(top: 12, left: 24, bottom: 24, right: 24); root.translatesAutoresizingMaskIntoConstraints = false
+        let document = PrisonDocument(); document.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = document; document.addSubview(root)
+        let fill = root.widthAnchor.constraint(equalTo: document.widthAnchor); fill.priority = .defaultHigh
+        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), root.centerXAnchor.constraint(equalTo: document.centerXAnchor), root.topAnchor.constraint(equalTo: document.topAnchor), root.bottomAnchor.constraint(equalTo: document.bottomAnchor), root.widthAnchor.constraint(lessThanOrEqualTo: document.widthAnchor), root.widthAnchor.constraint(lessThanOrEqualToConstant: 920), fill])
+        page = scroll
+        return root
     }
     func card(_ title: String, in stack: NSStackView) -> NSStackView {
         // Constrain the contents directly to the card. NSBox content geometry differs on Catalina.
@@ -2679,6 +2696,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         while !ready() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
         return ready()
     }
+    private func waitForHardwareMirror(_ target: CGDirectDisplayID, of master: CGDirectDisplayID, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        func ready() -> Bool { CGDisplayMirrorsDisplay(target) == master && CGDisplayIsInHWMirrorSet(target) != 0 }
+        while !ready() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        return ready()
+    }
     private func waitForLocalDisplayRemoval(_ id: CGDirectDisplayID, timeout: TimeInterval = 15) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while CGDisplayIsOnline(id) != 0 && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
@@ -2694,11 +2717,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for edge in DesktopEdge.allCases { pcEdge.addItem(withTitle: edge.title.replacingOccurrences(of: "este Mac", with: "mis pantallas")) }
         pcEdge.selectItem(at: saved.edge)
         pcEdge.target = self; pcEdge.action = #selector(changePCEdge)
-        row("Dirección", pcHost, in: pc); row("Clave", pcKey, in: pc); row("El PC está", pcEdge, in: pc)
-        pcConnect.target = self; pcConnect.action = #selector(connectPC)
-        pcDisconnect.target = self; pcDisconnect.action = #selector(disconnectPC); pcDisconnect.isEnabled = saved.enabled
+        addText("1. Abre PRISON DISPLAY en el PC.  2. Pulsa Buscar y emparejar.  3. Comprueba que el código es el mismo en los dos y acepta.", to: pc)
         pcPair.target = self; pcPair.action = #selector(pairPC)
         buttons([pcPair], in: pc)
+        row("El PC está", pcEdge, in: pc)
+        sectionLabel("O A MANO, CON LA DIRECCIÓN Y LA CLAVE DEL PC", in: pc)
+        row("Dirección", pcHost, in: pc); row("Clave", pcKey, in: pc)
+        pcConnect.target = self; pcConnect.action = #selector(connectPC)
+        pcDisconnect.target = self; pcDisconnect.action = #selector(disconnectPC); pcDisconnect.isEnabled = saved.enabled
         buttons([pcConnect, pcDisconnect], in: pc)
         pcStatus.font = .systemFont(ofSize: 12); pcStatus.textColor = prisonSecondaryText
         pc.addArrangedSubview(pcStatus); pcStatus.widthAnchor.constraint(equalTo: pc.widthAnchor).isActive = true
@@ -2860,12 +2886,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard waitForLocalDisplay(virtual.displayID, width: profile.width, height: profile.height) else {
             virtual.destroy(); _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
-            localStatus.stringValue = "macOS no activó el tamaño virtual elegido. Prueba un tamaño menor."
+            localStatus.stringValue = "macOS no encendió el escritorio virtual. Si estás enviando pantalla a dos Mac a la vez, detén una: este Mac solo admite dos pantallas externas a la vez (el monitor HDMI cuenta como una). Si no, prueba un tamaño menor."
             refreshLocalDisplays(); return
         }
         guard configureLocalMonitor(target, mirrorOf: virtual.displayID) else {
             virtual.destroy(); localStatus.stringValue = "macOS no pudo mostrar el escritorio virtual en ese monitor."
             _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
+            refreshLocalDisplays(); return
+        }
+        // Only a hardware mirror keeps the pointer smooth; otherwise undo it.
+        if !waitForHardwareMirror(target, of: virtual.displayID) {
+            _ = configureLocalMonitor(target, mirrorOf: CGMainDisplayID())
+            let id = virtual.displayID; virtual.destroy(); _ = waitForLocalDisplayRemoval(id)
+            _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
+            localStatus.stringValue = "\(profile.width) × \(profile.height) no se puede mostrar con fluidez en este monitor (el Mac lo haría por software y el ratón iría lento). Elige un tamaño menor."
             refreshLocalDisplays(); return
         }
         localVirtual = virtual; localPhysicalDisplay = target; localPhysicalOrigin = origin

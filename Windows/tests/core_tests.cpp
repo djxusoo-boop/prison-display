@@ -59,9 +59,9 @@ bool handshake(bool correct){
 }
 int main(int argc,char** argv){try{
     if(argc!=2)throw Error("Expected fixture directory");const std::string root=argv[1];
-    const auto hello=file(root+"/hello.bin");const auto h=decode_hello(hello,"sender","0.4.26");
+    const auto hello=file(root+"/hello.bin");const auto h=decode_hello(hello,"sender","0.4.27");
     check(h.name=="Mac de prueba ñ"&&encode(h)==hello,"Swift hello is byte-identical");
-    rejects([&]{decode_hello(hello,"receiver","0.4.26");},"Role confusion rejected");
+    rejects([&]{decode_hello(hello,"receiver","0.4.27");},"Role confusion rejected");
     rejects([&]{decode_hello(hello,"sender","0.4.23");},"Version mismatch rejected");
     rejects([&]{encode(Hello{"sender","0.4.22",std::string("bad\0name",8)});},"Control name rejected");
     rejects([&]{encode(Hello{"sender","0.4.22",std::string("\xc0\xaf",2)});},"Invalid UTF-8 rejected");

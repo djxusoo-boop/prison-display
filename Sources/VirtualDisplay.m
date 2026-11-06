@@ -324,7 +324,7 @@ static NSString *ADLayoutKey(NSUInteger slot) {
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:3];
     while (!CGDisplayIsOnline(screen.displayID) && deadline.timeIntervalSinceNow > 0)
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-    if (!CGDisplayIsOnline(screen.displayID)) { [screen destroy]; close(lease); printf("ERROR:La pantalla virtual no quedó disponible.\n"); fflush(stdout); return 1; }
+    if (!CGDisplayIsOnline(screen.displayID)) { [screen destroy]; close(lease); printf("ERROR:La pantalla virtual no se encendió. Este Mac puede tener ya el máximo de pantallas externas (un MacBook Air admite dos, contando un monitor HDMI). Desconecta o detén una y vuelve a intentarlo.\n"); fflush(stdout); return 1; }
     int selected = ADSelectExactMode(screen.displayID, width, height);
     deadline = [NSDate dateWithTimeIntervalSinceNow:3];
     while (selected == 1 && (CGDisplayPixelsWide(screen.displayID) != width || CGDisplayPixelsHigh(screen.displayID) != height) && deadline.timeIntervalSinceNow > 0)

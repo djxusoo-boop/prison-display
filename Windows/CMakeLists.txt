@@ -17,7 +17,7 @@ else()
 endif()
 
 if(WIN32)
-  add_executable(prison_display WIN32 src/app_win32.cpp)
+  add_executable(prison_display WIN32 src/app_win32.cpp resources/app.rc)
   target_link_libraries(prison_display PRIVATE prison_core user32 gdi32 ws2_32 crypt32 shell32 ole32)
   target_include_directories(prison_display PRIVATE include)
   if(MSVC)

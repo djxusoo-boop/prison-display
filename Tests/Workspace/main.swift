@@ -192,7 +192,8 @@ for role in [ScreenRole.receive, .send, .receive] {
     check(controller.sender.workspaceActive == (role == .send) && controller.receiver.workspaceActive == (role == .receive), "only the selected workflow stays active")
     check(controller.heading.stringValue == role.title, "header agrees with selected direction")
     let labels = visibleText(controller.window.contentView!)
-    check(labels.contains(role == .send ? "Resolución" : "Posición") == expert, "advanced settings appear only in expert mode")
+    if role == .send { check(labels.contains("Escritorio") && labels.contains("Imagen"), "resolution choices are always visible") }
+    else { check(labels.contains("Posición") == expert, "advanced crossing settings appear only in expert mode") }
     let savedResolution = controller.sender.resolution.indexOfSelectedItem
     controller.setExpertMode(!expert); controller.setExpertMode(expert)
     check(controller.sender.resolution.indexOfSelectedItem == savedResolution, "expert toggle preserves image settings")
@@ -215,6 +216,19 @@ for role in [ScreenRole.receive, .send, .receive] {
     }
 }
 }
+// Each tool opens its own page from the sidebar and screens remain one click away.
+for (button, name) in [(controller.mapButton, "map"), (controller.hdmiButton, "hdmi"), (controller.pcButton, "pc")] {
+    controller.chooseTool(button)
+    let visible = controller.container.subviews.filter { !$0.isHidden }
+    check(visible.count == 1 && button.selected && !controller.sendButton.selected, "tool \(name) shows only its own page")
+    controller.window.setContentSize(NSSize(width: 980, height: 850)); controller.window.contentView?.layoutSubtreeIfNeeded()
+    if let view = controller.window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: output+"/Workspace-tool-\(name).png"))
+    }
+}
+controller.chooseSend()
+check(controller.tool == nil && controller.sendButton.selected, "choosing a screen leaves the tool page")
 controller.select(.send)
 controller.chooseSecondSend()
 check(controller.selectedScreen == 1 && controller.sender.workspaceActive && controller.secondSender.workspaceActive, "second screen leaves first sender active")

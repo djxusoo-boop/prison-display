@@ -61,8 +61,8 @@ for selected in 0..<2 {
 check(controller.resolution.itemArray.filter { $0.tag >= 0 }.count == DisplayResolutionProfile.all.count, "remote resolution menu lists every desktop size")
 check(controller.resolution.selectedTag() >= 0, "remote resolution menu selects a size, not a group header")
 check(controller.localResolution.numberOfItems >= 4, "local HDMI menu exposes several larger virtual desktops")
-controller.localResolution.selectItem(at: 2)
-check(DisplayResolutionProfile.local[controller.localResolution.indexOfSelectedItem].width == 3840, "local HDMI 4K choice maps to a 3840x2160 virtual desktop")
+check(controller.localResolution.itemTitles.allSatisfy { title in
+    let n = title.split(separator: " ").compactMap { Int($0) }; return n.count >= 2 && n[0] * n[1] <= 3840 * 2160 }, "local HDMI menu only offers desktops that mirror smoothly (up to 4K)")
 controller.mode.selectItem(at: 0);controller.fps.selectItem(at: 0);controller.cursorStyle.selectItem(at: 0);controller.quality.selectItem(at: 2)
 #endif
 for width: CGFloat in [600, 660, 900] {

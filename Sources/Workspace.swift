@@ -69,6 +69,13 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     let container = NSView()
     let sendButton = RoleButton(title: "↗  Enviar pantalla", target: nil, action: nil)
     let receiveButton = RoleButton(title: "↙  Recibir pantalla", target: nil, action: nil)
+    // Tools have their own pages; nil shows the selected screen role.
+    enum Tool: Int { case map, hdmi, pc }
+    private(set) var tool: Tool?
+    let mapButton = RoleButton(title: "▦  Mapa de pantallas", target: nil, action: nil)
+    let hdmiButton = RoleButton(title: "▭  Monitor HDMI", target: nil, action: nil)
+    let pcButton = RoleButton(title: "⊞  PC con Windows", target: nil, action: nil)
+    private var toolPages: [Tool: NSView] = [:]
     let heading = NSTextField(labelWithString: "")
     private let statusPill = PrisonStatusPill(labelWithString: "Sin conexión")
     let descriptionLabel = NSTextField(wrappingLabelWithString: "")
@@ -148,6 +155,8 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         let brand = NSTextField(labelWithString: "PRISON DISPLAY"); brand.font = .systemFont(ofSize: 16, weight: .bold); brand.textColor = .white
         let computer = NSTextField(wrappingLabelWithString: Host.current().localizedName ?? "Este Mac"); computer.font = .systemFont(ofSize: 12); computer.textColor = NSColor(calibratedWhite: 0.68, alpha: 1)
         let separator = NSView(); separator.wantsLayer = true; separator.layer?.backgroundColor = NSColor(calibratedWhite: 0.18, alpha: 1).cgColor
+        let screensLabel = NSTextField(labelWithString: "PANTALLAS"), toolsLabel = NSTextField(labelWithString: "HERRAMIENTAS"), optionsLabel = NSTextField(labelWithString: "OPCIONES")
+        for label in [screensLabel, toolsLabel, optionsLabel] { label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = NSColor(calibratedWhite: 0.5, alpha: 1) }
         screenSummary.font = .systemFont(ofSize: 11); screenSummary.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         roleHint.font = .systemFont(ofSize: 12); roleHint.textColor = NSColor(calibratedWhite: 0.65, alpha: 1)
         brightnessLabel.font = .systemFont(ofSize: 12, weight: .semibold); brightnessLabel.textColor = .white
@@ -165,11 +174,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             button.setAccessibilityLabel(title == "−" ? "Bajar brillo conjunto" : "Subir brillo conjunto"); brightnessButtons.addArrangedSubview(button)
         }
         autoStartStatus.font = .systemFont(ofSize: 11); autoStartStatus.textColor = NSColor(calibratedWhite: 0.7, alpha: 1); autoStartStatus.isHidden = true
-        for view in [icon, brand, computer, separator, sendButton, secondSendButton, receiveButton, screenSummary, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, hdmiButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         icon.widthAnchor.constraint(equalToConstant: 56).isActive = true; icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
-        for view in [brand, computer, separator, sendButton, secondSendButton, receiveButton, screenSummary, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
+        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, hdmiButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
+        side.setCustomSpacing(22, after: screenSummary); side.setCustomSpacing(22, after: pcButton)
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         for button in [sendButton, secondSendButton, receiveButton] { button.heightAnchor.constraint(equalToConstant: 46).isActive = true; button.target = self; button.isBordered = false }
+        for button in [mapButton, hdmiButton, pcButton] { button.heightAnchor.constraint(equalToConstant: 40).isActive = true; button.target = self; button.isBordered = false; button.action = #selector(chooseTool(_:)) }
+        mapButton.tag = Tool.map.rawValue; hdmiButton.tag = Tool.hdmi.rawValue; pcButton.tag = Tool.pc.rawValue
         sendButton.action = #selector(chooseSend); secondSendButton.action = #selector(chooseSecondSend); receiveButton.action = #selector(chooseReceive)
         let version = versionButton
         version.font = .systemFont(ofSize: 11); version.alignment = .left; version.isBordered = false; version.bezelStyle = .inline
@@ -217,7 +229,9 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             utility.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor), utility.trailingAnchor.constraint(equalTo: content.trailingAnchor), utility.bottomAnchor.constraint(equalTo: content.bottomAnchor), utility.heightAnchor.constraint(equalToConstant: 112),
             container.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor), container.trailingAnchor.constraint(equalTo: content.trailingAnchor), container.topAnchor.constraint(equalTo: header.bottomAnchor), container.bottomAnchor.constraint(equalTo: utility.topAnchor)
         ])
-        for view in [sendContent!, secondSendContent!, receiveContent!] {
+        toolPages = [.map: sender.mapPage, .hdmi: sender.hdmiPage, .pc: sender.pcPage].compactMapValues { $0 }
+        pcButton.isHidden = toolPages[.pc] == nil
+        for view in [sendContent!, secondSendContent!, receiveContent!] + Array(toolPages.values) {
             view.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(view)
             NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: container.leadingAnchor), view.trailingAnchor.constraint(equalTo: container.trailingAnchor), view.topAnchor.constraint(equalTo: container.topAnchor), view.bottomAnchor.constraint(equalTo: container.bottomAnchor)])
         }
@@ -373,13 +387,20 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         versionButton.toolTip = role == .receive
             ? "Pulsa para abrir la pantalla recibida a pantalla completa"
             : "Pulsa para poner PRISON DISPLAY a pantalla completa"
-        sendContent?.isHidden = role != .send || selectedScreen != 0
-        secondSendContent?.isHidden = role != .send || selectedScreen != 1
-        receiveContent?.isHidden = role != .receive
+        sendContent?.isHidden = tool != nil || role != .send || selectedScreen != 0
+        secondSendContent?.isHidden = tool != nil || role != .send || selectedScreen != 1
+        receiveContent?.isHidden = tool != nil || role != .receive
+        for (kind, page) in toolPages { page.isHidden = tool != kind }
+        mapButton.selected = tool == .map; hdmiButton.selected = tool == .hdmi; pcButton.selected = tool == .pc
         secondSendButton.isHidden = role != .send
-        sendButton.selected = role == .send && selectedScreen == 0; secondSendButton.selected = role == .send && selectedScreen == 1;
-        sendButton.title = expertMode && role == .send ? WorkspaceScreenNames.buttonTitle(slot: 0, defaults: workspaceDefaults) : "↗  Enviar pantalla"; secondSendButton.title = expertMode ? (WorkspaceScreenNames.name(slot: 1, defaults: workspaceDefaults) == nil ? "↗  Añadir pantalla" : WorkspaceScreenNames.buttonTitle(slot: 1, defaults: workspaceDefaults)) : "↗  Añadir pantalla"; receiveButton.selected = role == .receive
+        sendButton.selected = tool == nil && role == .send && selectedScreen == 0; secondSendButton.selected = tool == nil && role == .send && selectedScreen == 1;
+        sendButton.title = expertMode && role == .send ? WorkspaceScreenNames.buttonTitle(slot: 0, defaults: workspaceDefaults) : "↗  Enviar pantalla"; secondSendButton.title = expertMode ? (WorkspaceScreenNames.name(slot: 1, defaults: workspaceDefaults) == nil ? "↗  Añadir pantalla" : WorkspaceScreenNames.buttonTitle(slot: 1, defaults: workspaceDefaults)) : "↗  Añadir pantalla"; receiveButton.selected = tool == nil && role == .receive
         heading.stringValue = role.title
+        if let tool = tool {
+            heading.stringValue = ["Mapa de pantallas", "Monitor HDMI", "PC con Windows"][tool.rawValue]
+            descriptionLabel.stringValue = ["Coloca tus pantallas y el PC arrastrándolos.", "Más espacio de escritorio en un monitor conectado por cable.", "Usa el ratón, el teclado y el portapapeles de este Mac en tu PC."][tool.rawValue]
+            return
+        }
         descriptionLabel.stringValue = !expertMode ? (role == .send ? "En el otro Mac, elige Recibir pantalla y selecciona este equipo." : "Pulsa Conectar junto al Mac disponible o enlazado. La primera vez, confirma el código.") : role == .send ? "\(WorkspaceScreenNames.label(slot: selectedScreen, defaults: workspaceDefaults)) · Cada receptor tiene su escritorio, conexión y ajustes." : role.detail
         roleHint.stringValue = !expertMode ? "1. Usa Enviar en el Mac principal.\n2. Elige Recibir en los otros Mac.\n3. Comprueba el mismo código." : role == .send ? "Conecta un Mac a \(WorkspaceScreenNames.label(slot: 0, defaults: workspaceDefaults)) y otro a \(WorkspaceScreenNames.label(slot: 1, defaults: workspaceDefaults)).\n\nPuedes cambiar entre ambas sin desconectar. Cambiar a Recibir detiene los dos envíos." : "En el otro Mac, elige Enviar pantalla.\n\nAl cambiar de función se detiene la conexión actual."
     }
@@ -391,13 +412,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         if !CommandLine.arguments.contains("--layout-preview") { UserDefaults.standard.set(role.rawValue, forKey: "PrisonDisplay.workspace.role") }
         refreshRole(); activate()
     }
-    @objc func chooseSend() { select(.send); selectedScreen = 0; refreshRole() }
+    @objc func chooseTool(_ sender: NSButton) { tool = Tool(rawValue: sender.tag); refreshRole() }
+    @objc func chooseSend() { tool = nil; select(.send); selectedScreen = 0; refreshRole() }
     @objc func chooseSecondSend() {
-        select(.send); selectedScreen = 1; secondEnabled = true
+        tool = nil; select(.send); selectedScreen = 1; secondEnabled = true
         if !CommandLine.arguments.contains("--layout-preview") { UserDefaults.standard.set(true, forKey: "PrisonDisplay.workspace.secondScreen") }
         secondSender.activateWorkspace(); refreshRole()
     }
-    @objc func chooseReceive() { select(.receive) }
+    @objc func chooseReceive() { tool = nil; select(.receive); refreshRole() }
     @objc private func fullscreenReceivers() {
         if role == .receive { receiver.fullscreen(); return }
         guard role == .send, secondEnabled else { return }
