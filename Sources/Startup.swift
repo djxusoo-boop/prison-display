@@ -73,3 +73,35 @@ enum LoginItemManager {
         return .disabled
     }
 }
+
+// Before macOS 13 there is no supported login-item API (LSSharedFileList
+// crashes on some Intel releases), so the app opens itself at login with a
+// per-user launch agent: `open` on this app's own bundle. It is written only
+// when the user turns the option on, and removed when it is turned off.
+enum LegacyLoginAgent {
+    static var directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+    static func label(identifier: String = Bundle.main.bundleIdentifier ?? "local.prisondisplay") -> String {
+        "local.prisondisplay.autostart." + identifier.filter { $0.isLetter || $0.isNumber || $0 == "." }
+    }
+    static func url(identifier: String = Bundle.main.bundleIdentifier ?? "local.prisondisplay") -> URL {
+        directory.appendingPathComponent(label(identifier: identifier) + ".plist")
+    }
+    static func contents(bundle: URL, identifier: String) -> [String: Any] {
+        ["Label": label(identifier: identifier), "ProgramArguments": ["/usr/bin/open", bundle.path], "RunAtLoad": true, "LimitLoadToSessionType": "Aqua"]
+    }
+    static func isEnabled(identifier: String = Bundle.main.bundleIdentifier ?? "local.prisondisplay") -> Bool {
+        FileManager.default.fileExists(atPath: url(identifier: identifier).path)
+    }
+    // Rewrites the agent when the app has moved, so login opens this copy.
+    static func setEnabled(_ enabled: Bool, bundle: URL = Bundle.main.bundleURL, identifier: String = Bundle.main.bundleIdentifier ?? "local.prisondisplay") throws {
+        let file = url(identifier: identifier)
+        guard enabled else {
+            if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+            return
+        }
+        let data = try PropertyListSerialization.data(fromPropertyList: contents(bundle: bundle, identifier: identifier), format: .xml, options: 0)
+        if (try? Data(contentsOf: file)) == data { return }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: file, options: .atomic)
+    }
+}

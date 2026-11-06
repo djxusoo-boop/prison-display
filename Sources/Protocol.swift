@@ -570,33 +570,67 @@ struct ClipboardPayload: Equatable {
 }
 
 // Strict, small messages. No display capture or input permission is needed.
+// A command reaches every connected Mac; `target` limits who applies it:
+// nil = every screen, "node" = every screen of one Mac, "node/panel" = one
+// screen. A query only asks each Mac to report its screens.
 struct BrightnessCommand: Codable {
     let id: UUID
     let percent: Int
-    init(percent: Int, id: UUID = UUID()) throws {
+    let target: String?
+    let query: Bool?
+    init(percent: Int, id: UUID = UUID(), target: String? = nil, query: Bool? = nil) throws {
         guard (5...100).contains(percent) else { throw AireError("Brillo fuera de rango.") }
-        self.id = id; self.percent = percent
+        if let target = target {
+            guard !target.isEmpty, target.count <= 120, target.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 32 && $0.value < 127 }) else { throw AireError("Destino de brillo inválido.") }
+        }
+        self.id = id; self.percent = percent; self.target = target; self.query = query == true ? true : nil
     }
+    static func query() -> BrightnessCommand { (try? BrightnessCommand(percent: 50, query: true))! }
     init(data: Data) throws {
         guard data.count <= 1024 else { throw AireError("Ajuste de brillo demasiado grande.") }
         let command = try JSONDecoder().decode(Self.self, from: data)
-        try self.init(percent: command.percent, id: command.id)
+        try self.init(percent: command.percent, id: command.id, target: command.target, query: command.query)
+    }
+    var isQuery: Bool { query == true }
+    // Whether this Mac (node) should apply it to the given screen.
+    func applies(node: UUID, panel: String) -> Bool {
+        guard !isQuery else { return false }
+        guard let target = target else { return true }
+        let node = node.uuidString
+        return target == node || target == node + "/" + panel
     }
     var data: Data { (try? JSONEncoder().encode(self)) ?? Data() }
 }
+// One screen of a Mac. `software` screens are dimmed by this app (external
+// monitors that do not accept brightness over the cable).
+struct BrightnessPanel: Codable, Equatable {
+    let id: String
+    let name: String
+    let percent: Int?
+    let software: Bool
+    init(id: String, name: String, percent: Int?, software: Bool) {
+        self.id = String(id.unicodeScalars.filter { $0.isASCII && $0.value > 32 && $0.value < 127 && $0 != "/" }.map(Character.init).prefix(40))
+        self.name = String(name.filter { !$0.isNewline && !$0.isASCIIControl }.prefix(40)); self.percent = percent; self.software = software
+    }
+}
 struct BrightnessResult: Codable {
+    static let maxPanels = 4
     let id: UUID
     let node: UUID
     let name: String
     let percent: Int?
-    init(id: UUID, node: UUID, name: String, percent: Int?) {
+    let panels: [BrightnessPanel]?
+    init(id: UUID, node: UUID, name: String, percent: Int?, panels: [BrightnessPanel]? = nil) {
         self.id = id; self.node = node; self.name = String(name.filter { !$0.isNewline && !$0.isASCIIControl }.prefix(60)); self.percent = percent
+        self.panels = panels.map { Array($0.prefix(Self.maxPanels)) }
     }
     init(data: Data) throws {
         guard data.count <= 1024 else { throw AireError("Confirmación de brillo demasiado grande.") }
         let result = try JSONDecoder().decode(Self.self, from: data)
-        guard result.name.count <= 60, result.percent.map({ (0...100).contains($0) }) ?? true else { throw AireError("Confirmación de brillo inválida.") }
-        self.init(id: result.id, node: result.node, name: result.name, percent: result.percent)
+        guard result.name.count <= 60, result.percent.map({ (0...100).contains($0) }) ?? true,
+              (result.panels?.count ?? 0) <= Self.maxPanels,
+              (result.panels ?? []).allSatisfy({ !$0.id.isEmpty && $0.id.count <= 40 && $0.name.count <= 40 && ($0.percent.map { (0...100).contains($0) } ?? true) }) else { throw AireError("Confirmación de brillo inválida.") }
+        self.init(id: result.id, node: result.node, name: result.name, percent: result.percent, panels: result.panels)
     }
     var data: Data { (try? JSONEncoder().encode(self)) ?? Data() }
 }

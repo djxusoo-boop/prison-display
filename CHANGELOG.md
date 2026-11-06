@@ -1,3 +1,9 @@
+## 0.4.28 · Brillo de cada pantalla y una sola copia
+- Nuevo apartado Herramientas → Brillo: todas las pantallas a la vez, todas las de un Mac o cada una por separado, desde cualquier Mac conectado.
+- Los monitores que no aceptan brillo por el cable (como el HDMI del Air) se oscurecen desde la app conservando su perfil de color.
+- «Abrir al iniciar sesión» funciona también en macOS anteriores a Ventura (MacBook Pro 2014, iMac con Monterey).
+- Al abrirse, la app ofrece quitar las versiones antiguas y quedarse sola en Aplicaciones.
+
 ## 0.4.27 · Todo en su sitio · Windows 0.3.0
 - Arreglo: las apps no abrían en el iMac (macOS 12) ni en el MacBook Pro (10.13) al compilar con Xcode 27; las llamadas a CoreMedia del binario Intel se enlazan ahora directamente a CoreMedia.
 - Barra lateral por apartados: PANTALLAS (Enviar, Añadir, Recibir), HERRAMIENTAS (Mapa de pantallas, Monitor HDMI, PC con Windows) y OPCIONES. Cada herramienta tiene su propia página con instrucciones de 1-2-3.

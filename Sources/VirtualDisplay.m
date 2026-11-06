@@ -403,4 +403,18 @@ static NSString *ADLayoutKey(NSUInteger slot) {
     if (!set || set(panel, (float)level) != 0) return -1;
     return [self read];
 }
++ (double)readDisplay:(CGDirectDisplayID)display {
+    void *library = [self services]; if (!library || !display) return -1;
+    int (*get)(CGDirectDisplayID, float *) = dlsym(library, "DisplayServicesGetBrightness");
+    float value = 0;
+    if (!get || get(display, &value) != 0 || !isfinite(value) || value < 0 || value > 1) return -1;
+    return value;
+}
++ (double)applyDisplay:(CGDirectDisplayID)display level:(double)level {
+    if (!isfinite(level) || level < 0.05 || level > 1) return -1;
+    void *library = [self services]; if (!library || !display) return -1;
+    int (*set)(CGDirectDisplayID, float) = dlsym(library, "DisplayServicesSetBrightness");
+    if (!set || set(display, (float)level) != 0) return -1;
+    return [self readDisplay:display];
+}
 @end

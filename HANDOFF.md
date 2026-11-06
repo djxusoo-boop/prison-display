@@ -1,4 +1,4 @@
-# Estado actual · PRISON DISPLAY Mac 0.4.26 · Windows 0.2.2
+# Estado actual · PRISON DISPLAY Mac 0.4.28 · Windows 0.3.0
 
 Fecha: 6 de noviembre de 2026. Rama `mejoras-rendimiento`.
 

@@ -32,5 +32,30 @@ check((try? BrightnessCommand(data: Data(repeating: 0, count: 1025))) == nil, "r
 check((try? BrightnessResult(data: Data(repeating: 0, count: 1025))) == nil, "reject oversized result")
 check((try? BrightnessCommand(data: Data("{\"id\":\"\(id)\",\"percent\":0}".utf8))) == nil, "decoded request cannot bypass range check")
 check((try? BrightnessResult(data: BrightnessResult(id: id, node: node, name: "Mac", percent: 101).data)) == nil, "decoded confirmation cannot bypass range check")
+// Targets: every screen, one Mac, one screen; queries change nothing.
+do {
+    let mac = UUID(), other = UUID()
+    let all = try BrightnessCommand(percent: 40)
+    check(all.applies(node: mac, panel: "a") && all.applies(node: other, panel: "b"), "no target reaches every screen")
+    let one = try BrightnessCommand(data: try BrightnessCommand(percent: 40, target: mac.uuidString).data)
+    check(one.target == mac.uuidString && one.applies(node: mac, panel: "a") && one.applies(node: mac, panel: "b") && !one.applies(node: other, panel: "a"), "a Mac target reaches only that Mac")
+    let screen = try BrightnessCommand(data: try BrightnessCommand(percent: 40, target: mac.uuidString + "/610-a064-0").data)
+    check(screen.applies(node: mac, panel: "610-a064-0") && !screen.applies(node: mac, panel: "25ce-27-0") && !screen.applies(node: other, panel: "610-a064-0"), "a screen target reaches only that screen")
+    let query = try BrightnessCommand(data: BrightnessCommand.query().data)
+    check(query.isQuery && !query.applies(node: mac, panel: "a"), "a query changes nothing")
+    let legacy = try BrightnessCommand(data: Data("{\"id\":\"\(UUID())\",\"percent\":30}".utf8))
+    check(legacy.target == nil && !legacy.isQuery && legacy.applies(node: mac, panel: "a"), "commands from older versions still apply to all")
+    for bad in ["", "a b", "x\n", String(repeating: "a", count: 121)] { check((try? BrightnessCommand(percent: 40, target: bad)) == nil, "reject unsafe target") }
+    let long = String(repeating: "Ñ", count: 80)
+    let panels = (0..<6).map { BrightnessPanel(id: String(repeating: "f", count: 60) + "/\($0)", name: long, percent: 100, software: $0 % 2 == 0) }
+    let result = BrightnessResult(id: UUID(), node: mac, name: long, percent: 100, panels: panels)
+    check(result.panels?.count == BrightnessResult.maxPanels && result.data.count <= 1024, "largest report fits the limit (\(result.data.count) bytes)")
+    let decoded = try BrightnessResult(data: result.data)
+    check(decoded.panels == result.panels && decoded.panels!.allSatisfy { $0.id.count <= 40 && !$0.id.contains("/") && $0.name.count <= 40 }, "screens round trip and are bounded")
+    let old = try BrightnessResult(data: BrightnessResult(id: UUID(), node: mac, name: "Mac", percent: 50).data)
+    check(old.panels == nil, "reports from older versions still decode")
+    let badPanel = Data("{\"id\":\"\(UUID())\",\"node\":\"\(mac)\",\"name\":\"M\",\"panels\":[{\"id\":\"a\",\"name\":\"b\",\"percent\":140,\"software\":true}]}".utf8)
+    check((try? BrightnessResult(data: badPanel)) == nil, "decoded screen cannot bypass range check")
+}
 print("RESULT \(checks) checks \(failures) failures")
 exit(failures == 0 ? 0 : 1)

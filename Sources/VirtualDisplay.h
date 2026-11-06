@@ -16,4 +16,6 @@
 @interface ADBrightness : NSObject
 + (double)read;
 + (double)apply:(double)level;
++ (double)readDisplay:(CGDirectDisplayID)display;
++ (double)applyDisplay:(CGDirectDisplayID)display level:(double)level;
 @end
