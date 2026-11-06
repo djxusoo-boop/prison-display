@@ -2624,7 +2624,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func nativeSize(_ id: CGDirectDisplayID) -> (Int, Int)? {
         let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
         let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []
-        guard let best = modes.filter({ $0.isUsableForDesktopGUI() }).max(by: { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }) else { return nil }
+        // 1× modes only: scaled duplicates (1024×576 drawn at 2048×1152) are not
+        // the panel. Prefer the mode the monitor marks as native.
+        let real = modes.filter { $0.isUsableForDesktopGUI() && $0.pixelWidth == $0.width && $0.pixelHeight == $0.height }
+        let area: (CGDisplayMode, CGDisplayMode) -> Bool = { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }
+        let native = real.filter { $0.ioFlags & 0x0200_0000 != 0 }
+        guard let best = native.max(by: area) ?? real.max(by: area) else { return nil }
         return (best.pixelWidth, best.pixelHeight)
     }
     private func updateLocalResolutions() {
