@@ -8,6 +8,7 @@
 - Botón central del ratón transmitido; arrastrar para seleccionar funciona también en modo continuo.
 - El Air informa a cada receptor de qué bordes continúan en otra pantalla.
 - Protocolo revisión 11: los tres Mac deben tener la misma versión.
+- PC con Windows: nueva tarjeta en Enviar pantalla. El ratón y el teclado del Air pasan al PC por el borde elegido (⌘C → Ctrl+C, ⌥2 → @) y vuelven por el mismo borde o con ⌃⌥Esc. Requiere PRISON DISPLAY Windows 0.2.0 en el PC.
 
 ## 0.4.23 · Pantalla virtual 4K y monitor HDMI
 - Resolución virtual 3840 × 2160 añadida sin cambiar las tres opciones anteriores ni sus preferencias guardadas.

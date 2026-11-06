@@ -1,24 +1,26 @@
-# PRISON DISPLAY Windows · 0.1.0-dev
+# PRISON DISPLAY Windows · 0.2.0
 
-Puerto iniciado. **Todavía no existe una app ni un instalador Windows utilizable.**
-Este directorio contiene el núcleo portable y pruebas de compatibilidad de mensajes
-con el Mac; captura, visor, control nativo y conexión de producción están pendientes.
-Véase [estado y arquitectura](docs/ARQUITECTURA.md).
+App para el PC con Windows: **recibe el ratón y el teclado del Mac**. Lleva el
+ratón del Air al borde elegido de sus pantallas y pasa al PC con el teclado;
+vuelve por el mismo borde o con ⌃⌥Esc en el Mac.
 
-## Pruebas del núcleo
+- Conexión cifrada TLS 1.2 PSK con la misma derivación que el Mac. La clave se
+  genera en el PC, se guarda protegida con DPAPI y se escribe una vez en el Mac
+  (Enviar pantalla → PC con Windows), que la guarda en su Llavero.
+- Puerto TCP 37941. Windows puede preguntar por el firewall: permite redes privadas.
+- Teclas por posición física (teclado español ISO incluido). ⌘ → Ctrl, ⌥ izquierda
+  → AltGr (⌥2 = @), ⌥ derecha → Alt. Rueda, botón central y Bloq Mayús incluidos.
+- Un único Mac controla a la vez, con permiso temporal renovado cada 0,5 s.
+  Si el Mac deja de responder 3 s, se sueltan todas las teclas y botones.
+- Pendiente: ver la pantalla del Mac en Windows (captura y vídeo), instalador.
 
-Requisitos: CMake, compilador C++17 y OpenSSL >=3.0. En Windows se requiere un
-compilador y bibliotecas de la misma arquitectura. No se instala ningún controlador.
+## Compilar
 
 ```text
-cmake -S Windows -B Windows/build/test -DOPENSSL_ROOT_DIR=<ruta de OpenSSL>
-cmake --build Windows/build/test --config Release
-ctest --test-dir Windows/build/test -C Release --output-on-failure
+cmake -S Windows -B Windows/build/windows -DCMAKE_TOOLCHAIN_FILE=<llvm-mingw.cmake> \
+  -DOPENSSL_ROOT_DIR=<openssl-win-x86_64> -DOPENSSL_USE_STATIC_LIBS=TRUE -DCMAKE_EXE_LINKER_FLAGS=-static
+cmake --build Windows/build/windows
 ```
 
-Los vectores se generan en macOS con `zsh Windows/tests/generate-fixtures.sh` usando
-los serializadores Swift de la app. Los tests no capturan pantalla, no publican
-entrada y no utilizan credenciales de los enlaces guardados.
-
-El perfil de prueba es Mac 0.4.22/protocolo 10; no cambiar VERSION del proyecto Mac
-ni desplegar 0.4.23 HDMI para realizar estas pruebas.
+Pruebas en macOS (agente real con un inyector simulado y el enlace del Mac):
+`zsh Windows/tests/run-mac-e2e.sh`.

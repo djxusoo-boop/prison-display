@@ -412,9 +412,23 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     }
     @objc func showAbout() { sender.about() }
     func application(_ application: NSApplication, open urls: [URL]) { select(.receive); receiver.application(application, open: urls) }
-    func applicationDidBecomeActive(_ notification: Notification) { if role == .receive { receiver.applicationDidBecomeActive(notification) } }
-    func applicationWillResignActive(_ notification: Notification) { receiver.applicationWillResignActive(notification) }
-    func applicationWillTerminate(_ notification: Notification) { summaryTimer?.invalidate(); summaryTimer = nil; brightnessPending?.cancel(); brightnessDeadline?.invalidate(); sender.deactivateWorkspace(); secondSender.deactivateWorkspace(); receiver.deactivateWorkspace() }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        #if !LEGACY
+        WindowsLink.shared.bridge.applicationDidBecomeActive()
+        #endif
+        if role == .receive { receiver.applicationDidBecomeActive(notification) }
+    }
+    func applicationWillResignActive(_ notification: Notification) {
+        #if !LEGACY
+        WindowsLink.shared.bridge.applicationDidResignActive()
+        #endif
+        receiver.applicationWillResignActive(notification)
+    }
+    func applicationWillTerminate(_ notification: Notification) { summaryTimer?.invalidate(); summaryTimer = nil; brightnessPending?.cancel(); brightnessDeadline?.invalidate(); sender.deactivateWorkspace(); secondSender.deactivateWorkspace(); receiver.deactivateWorkspace()
+        #if !LEGACY
+        WindowsLink.shared.bridge.stop()
+        #endif
+    }
     func windowWillClose(_ notification: Notification) { if (notification.object as? NSWindow) === window { NSApp.terminate(nil) } }
 }
 #endif

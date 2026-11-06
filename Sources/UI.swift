@@ -1504,6 +1504,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var localPhysicalOrigin = CGPoint.zero
     var connectionLink: ConnectionLink?
     let copyLink = PrisonSecondaryButton(title: "Copiar enlace de conexión", target: nil, action: nil)
+    #if UNIFIED && !LEGACY
+    let pcHost = NSTextField(string: "")
+    let pcKey = NSTextField(string: "")
+    let pcEdge = PrisonPopUpButton()
+    let pcConnect = PrisonActionButton(title: "Conectar", target: nil, action: nil)
+    let pcDisconnect = PrisonSecondaryButton(title: "Desconectar", target: nil, action: nil)
+    let pcStatus = NSTextField(wrappingLabelWithString: "Abre PRISON DISPLAY en el PC: muestra su dirección y su clave.")
+    #endif
     #else
     let engine = ReceiverEngine()
     let desktopBridge = DesktopBridge()
@@ -1645,6 +1653,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             localStatus.widthAnchor.constraint(equalTo: local.widthAnchor).isActive = true
             addText("Crea un escritorio virtual más grande que la resolución del monitor (hasta 5K) y el monitor lo muestra reducido. No añade píxeles físicos: el texto se ve más pequeño, pero caben más ventanas. La pantalla del MacBook permanece disponible para detenerlo.", to: local)
             refreshLocalDisplays()
+            #if UNIFIED && !LEGACY
+            buildPCCard(in: root)
+            #endif
         }
         #else
         if !hosted { addText("Convierte este Mac en la pantalla del otro.", to: root) }
@@ -2233,6 +2244,64 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         while CGDisplayIsOnline(id) != 0 && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
         return CGDisplayIsOnline(id) == 0
     }
+    #if UNIFIED && !LEGACY
+    private func buildPCCard(in root: NSStackView) {
+        let pc = card("PC CON WINDOWS · RATÓN Y TECLADO", in: root)
+        let saved = PCLinkSettings.load(readKey: false)
+        pcHost.stringValue = saved.host; pcHost.placeholderString = "Dirección que muestra el PC, p. ej. 10.0.0.13"
+        pcKey.placeholderString = saved.enabled ? "Guardada en el Llavero" : "Clave de 32 caracteres que muestra el PC"
+        for field in [pcHost, pcKey] { field.font = .systemFont(ofSize: 14); field.heightAnchor.constraint(equalToConstant: 30).isActive = true }
+        for edge in DesktopEdge.allCases { pcEdge.addItem(withTitle: edge.title.replacingOccurrences(of: "este Mac", with: "mis pantallas")) }
+        pcEdge.selectItem(at: saved.edge)
+        pcEdge.target = self; pcEdge.action = #selector(changePCEdge)
+        row("Dirección", pcHost, in: pc); row("Clave", pcKey, in: pc); row("El PC está", pcEdge, in: pc)
+        pcConnect.target = self; pcConnect.action = #selector(connectPC)
+        pcDisconnect.target = self; pcDisconnect.action = #selector(disconnectPC); pcDisconnect.isEnabled = saved.enabled
+        buttons([pcConnect, pcDisconnect], in: pc)
+        pcStatus.font = .systemFont(ofSize: 12); pcStatus.textColor = prisonSecondaryText
+        pc.addArrangedSubview(pcStatus); pcStatus.widthAnchor.constraint(equalTo: pc.widthAnchor).isActive = true
+        addText("Lleva el ratón al borde elegido de tus pantallas y pasará al PC con el teclado: ⌘C/⌘V funcionan como Ctrl+C/Ctrl+V y ⌥2 escribe @. Vuelve por el mismo borde o pulsa ⌃⌥Esc. Necesita el permiso de Accesibilidad de este Mac.", to: pc)
+        let link = WindowsLink.shared
+        link.bridge.edge = DesktopEdge(rawValue: saved.edge) ?? .right
+        link.onStatus = { [weak self] text in self?.pcStatus.stringValue = text }
+        link.onConnected = { [weak self] name in self?.pcConnect.title = name == nil ? "Conectar" : "Conectado · \(name!)" }
+        link.bridge.onDisabled = { [weak self] in self?.pcStatus.stringValue = "macOS pausó el control del PC. Pulsa Conectar para reanudarlo." }
+        // Reconnect a saved PC after launch; reading the key may need the Keychain.
+        if saved.enabled, !CommandLine.arguments.contains("--layout-preview") {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let stored = PCLinkSettings.load()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, !stored.key.isEmpty, let endpoint = try? PCLinkSettings.endpoint(stored.host) else { return }
+                    do { try link.connect(host: endpoint.0, port: endpoint.1, key: stored.key) } catch { self.pcStatus.stringValue = "\(error)" }
+                }
+            }
+        }
+    }
+    @objc func connectPC() {
+        var settings = PCLinkSettings.load(readKey: pcKey.stringValue.isEmpty)
+        settings.host = pcHost.stringValue
+        if !pcKey.stringValue.isEmpty { settings.key = pcKey.stringValue }
+        settings.edge = pcEdge.indexOfSelectedItem
+        do {
+            let endpoint = try PCLinkSettings.endpoint(settings.host)
+            guard !settings.key.isEmpty else { throw AireError("Escribe la clave que muestra el PC.") }
+            settings.key = try normalizedKey(settings.key)
+            WindowsLink.shared.bridge.edge = DesktopEdge(rawValue: settings.edge) ?? .right
+            try WindowsLink.shared.connect(host: endpoint.0, port: endpoint.1, key: settings.key)
+            settings.enabled = true; settings.save()
+            pcKey.stringValue = ""; pcKey.placeholderString = "Guardada en el Llavero"; pcDisconnect.isEnabled = true
+        } catch { pcStatus.stringValue = "\(error)" }
+    }
+    @objc func disconnectPC() {
+        WindowsLink.shared.disconnect()
+        var settings = PCLinkSettings.load(readKey: false); settings.enabled = false; settings.save()
+        pcDisconnect.isEnabled = false; pcStatus.stringValue = "Desconectado del PC. El ratón y el teclado se quedan en este Mac."
+    }
+    @objc func changePCEdge() {
+        WindowsLink.shared.bridge.leave(); WindowsLink.shared.bridge.edge = DesktopEdge(rawValue: pcEdge.indexOfSelectedItem) ?? .right
+        var settings = PCLinkSettings.load(readKey: false); settings.edge = pcEdge.indexOfSelectedItem; settings.save()
+    }
+    #endif
     @objc func refreshLocalDisplays() {
         let previous = localDisplay.indexOfSelectedItem
         var count: UInt32 = 0

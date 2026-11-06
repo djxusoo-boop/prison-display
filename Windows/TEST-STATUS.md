@@ -1,3 +1,16 @@
+# Validación · 0.2.0 · 6 de noviembre de 2026
+
+## Comprobado en macOS
+- Núcleo C++ con protocolo revisión 11 frente a vectores generados por la app Mac 0.4.24: 10046 comprobaciones, 0 fallos.
+- Agente de entrada: 21 comprobaciones (permiso temporal, caducidad, liberación de teclas y botones, ⌘C → Ctrl+C, AltGr, Bloq Mayús, rueda).
+- Punta a punta: el enlace real del Mac contra el agente y su servidor TLS compilados para macOS con inyector simulado: conexión, cruce, movimiento, clic, ⌘C, latidos, regreso, cierre del PC y rechazo de clave incorrecta. 0 fallos.
+- `prison_display.exe` compilado como PE32+ x86-64 estático; solo depende de DLL del sistema (UCRT de Windows 10).
+
+## Pendiente en la torre
+- Abrir el .exe, permitir el firewall, conectar desde el Air y probar ratón/teclado reales, escalado de pantallas, UAC y bloqueo.
+
+---
+
 # Validación del puerto Windows · 0.1.0-dev
 
 5 de noviembre de 2026.

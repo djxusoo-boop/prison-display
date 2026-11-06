@@ -50,7 +50,7 @@ void name_valid(const std::string& name) {
     if (name.front()==' ' || name.back()==' ') throw Error("Unnormalized computer name");
 }
 void pointer_valid(const Pointer& p) {
-    if (static_cast<unsigned>(p.action)>5 || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.delta) || !std::isfinite(p.delta_x)
+    if (static_cast<unsigned>(p.action)>8 || !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.delta) || !std::isfinite(p.delta_x)
         || p.x<0 || p.x>1 || p.y<0 || p.y>1 || std::abs(p.delta)>120 || std::abs(p.delta_x)>120 || p.clicks<1 || p.clicks>3 || (p.flags&~allowed_input_flags)) throw Error("Invalid pointer");
 }
 void keyboard_valid(const Keyboard& k) {
@@ -58,9 +58,11 @@ void keyboard_valid(const Keyboard& k) {
         || (k.action==Keyboard::Action::release_all && (k.code || k.flags || k.repeated))) throw Error("Invalid keyboard");
 }
 void control_valid(const DesktopControl& c) {
-    if (static_cast<unsigned>(c.action)>4 || !c.token) throw Error("Invalid desktop control");
+    if (static_cast<unsigned>(c.action)>6 || !c.token) throw Error("Invalid desktop control");
     if (c.action==DesktopControl::Action::accepted) {
         if (c.width<4 || c.width>32768 || c.height<4 || c.height>32768) throw Error("Invalid desktop size");
+    } else if (c.action==DesktopControl::Action::returned) {
+        if (c.width>65535 || c.height>65535) throw Error("Invalid return position");
     } else if (c.width || c.height) throw Error("Unexpected desktop dimensions");
 }
 void video_valid(const VideoFrame& v) {
@@ -97,7 +99,7 @@ void Parser::feed(const Bytes& data,const std::function<void(Packet)>& receive) 
             if (!length || length>max_packet) throw Error("Invalid packet length");
             if (buffer_.size()!=length+4) continue;
             const auto kind=r.number(1);
-            if (kind<1 || kind>18) throw Error("Unknown packet kind");
+            if (kind<1 || kind>19) throw Error("Unknown packet kind");
             Packet packet{static_cast<Kind>(kind),r.bytes(r.remaining())}; buffer_.clear(); receive(std::move(packet));
         }
     } catch (...) { buffer_.clear(); failed_=true; throw; }
@@ -116,7 +118,7 @@ Hello decode_hello(const Bytes& bytes,const std::string& role,const std::string&
     const auto a=text.find('|'), b=a==std::string::npos ? a : text.find('|',a+1);
     if (a==std::string::npos || b==std::string::npos || text.find('|',b+1)!=std::string::npos) throw Error("Invalid hello fields");
     Hello h{text.substr(0,a),text.substr(a+1,b-a-1),{}};
-    if (h.role!=role || h.version!=version) throw Error("Peer role or version mismatch");
+    if (h.role!=role || (!version.empty() && h.version!=version)) throw Error("Peer role or version mismatch");
     const auto name=unbase64(text.substr(b+1)); h.name.assign(name.begin(),name.end()); name_valid(h.name); return h;
 }
 Bytes encode(const Pointer& p) {
