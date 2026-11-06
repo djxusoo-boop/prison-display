@@ -1775,6 +1775,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let pcKey = NSTextField(string: "")
     let pcEdge = PrisonPopUpButton()
     let pcConnect = PrisonActionButton(title: "Conectar", target: nil, action: nil)
+    let pcPair = PrisonActionButton(title: "Buscar y emparejar", target: nil, action: nil)
+    private var pcPairing: PCPairing?
     let pcDisconnect = PrisonSecondaryButton(title: "Desconectar", target: nil, action: nil)
     let pcStatus = NSTextField(wrappingLabelWithString: "Abre PRISON DISPLAY en el PC: muestra su dirección y su clave.")
     #endif
@@ -2527,6 +2529,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         row("Dirección", pcHost, in: pc); row("Clave", pcKey, in: pc); row("El PC está", pcEdge, in: pc)
         pcConnect.target = self; pcConnect.action = #selector(connectPC)
         pcDisconnect.target = self; pcDisconnect.action = #selector(disconnectPC); pcDisconnect.isEnabled = saved.enabled
+        pcPair.target = self; pcPair.action = #selector(pairPC)
+        buttons([pcPair], in: pc)
         buttons([pcConnect, pcDisconnect], in: pc)
         pcStatus.font = .systemFont(ofSize: 12); pcStatus.textColor = prisonSecondaryText
         pc.addArrangedSubview(pcStatus); pcStatus.widthAnchor.constraint(equalTo: pc.widthAnchor).isActive = true
@@ -2553,6 +2557,47 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, !stored.key.isEmpty, let endpoint = try? PCLinkSettings.endpoint(stored.host) else { return }
                     do { try link.connect(host: endpoint.0, port: endpoint.1, key: stored.key) } catch { self.pcStatus.stringValue = "\(error)" }
+                }
+            }
+        }
+    }
+    // Find the PC on the network and pair with the 6-digit code: no key to type.
+    @objc func pairPC() {
+        pcPair.isEnabled = false; pcStatus.stringValue = "Buscando el PC en la red… (abre PRISON DISPLAY en Windows)"
+        PCDiscovery.scan(seconds: 4) { [weak self] found in
+            guard let self = self else { return }
+            guard !found.isEmpty else {
+                self.pcPair.isEnabled = true
+                self.pcStatus.stringValue = "No encuentro ningún PC. Comprueba que PRISON DISPLAY está abierto en Windows, en la misma red, y que el firewall lo permite. También puedes escribir la dirección y la clave."
+                return
+            }
+            var chosen = found[0]
+            if found.count > 1 {
+                let alert = NSAlert(); alert.messageText = "Elige el PC"
+                let menu = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26))
+                menu.addItems(withTitles: found.map { "\($0.name) · \($0.host)" }); alert.accessoryView = menu
+                alert.addButton(withTitle: "Emparejar"); alert.addButton(withTitle: "Cancelar")
+                guard alert.runModal() == .alertFirstButtonReturn else { self.pcPair.isEnabled = true; self.pcStatus.stringValue = "Emparejamiento cancelado."; return }
+                chosen = found[menu.indexOfSelectedItem]
+            }
+            self.pcStatus.stringValue = "Emparejando con \(chosen.name) (\(chosen.host))…"
+            let pairing = PCPairing(); self.pcPairing = pairing
+            pairing.start(host: chosen.host, port: chosen.pairingPort, confirm: { name, code, done in
+                NSApp.activate(ignoringOtherApps: true)
+                let alert = NSAlert(); alert.messageText = "Emparejar con \(name)"
+                alert.informativeText = "Código: \(code.prefix(3)) \(code.suffix(3))\n\nAcepta en el PC si muestra el mismo código."
+                alert.addButton(withTitle: "Coincide"); alert.addButton(withTitle: "Cancelar")
+                done(alert.runModal() == .alertFirstButtonReturn)
+            }) { [weak self] result in
+                guard let self = self else { return }
+                self.pcPair.isEnabled = true; self.pcPairing = nil
+                switch result {
+                case .success(let paired):
+                    self.pcHost.stringValue = paired.port == pcInputPort ? chosen.host : "\(chosen.host):\(paired.port)"
+                    self.pcKey.stringValue = paired.key
+                    self.connectPC()
+                    self.pcStatus.stringValue = "Emparejado con \(paired.name). Conectando…"
+                case .failure(let error): self.pcStatus.stringValue = "\(error)"
                 }
             }
         }

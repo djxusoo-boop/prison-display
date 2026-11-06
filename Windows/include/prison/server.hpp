@@ -20,6 +20,11 @@ public:
     // Thread-safe access to the agent from the interface thread.
     template<class F> void with_agent(F&& f) { std::lock_guard<std::mutex> lock(mutex_); f(agent_); }
     std::uint16_t port() const { return port_; }
+    // Pairing without typing the key: asks the person at the PC (blocking).
+    std::function<bool(const std::string& mac, const std::string& code)> confirm_pairing;
+    std::uint16_t pairing_port = 37942, announce_port = 37930;
+    bool announce = true;
+    std::uint32_t announce_address = 0xFFFFFFFFu; // Broadcast; tests use 127.0.0.1.
 private:
     InputAgent& agent_;
     std::string key_;

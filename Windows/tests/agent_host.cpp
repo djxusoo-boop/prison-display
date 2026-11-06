@@ -25,5 +25,14 @@ int main(int argc, char** argv) {
     std::thread([] { std::string line; while (std::getline(std::cin, line)) if (line.rfind("COPY ", 0) == 0) { std::lock_guard<std::mutex> l(copy_mutex); pending_copy = line.substr(5); } }).detach();
     Printer sink; InputAgent agent(sink, "Torre simulada", "0.2.0", 2560, 1440);
     AgentServer server(agent, argv[1], static_cast<std::uint16_t>(std::atoi(argv[2])));
+    // Optional: accept|reject PAIRPORT ANNOUNCEPORT for pairing tests.
+    const std::string decision = argc > 3 ? argv[3] : "reject";
+    server.pairing_port = static_cast<std::uint16_t>(argc > 4 ? std::atoi(argv[4]) : std::atoi(argv[2]) + 1);
+    server.announce_port = static_cast<std::uint16_t>(argc > 5 ? std::atoi(argv[5]) : 0);
+    server.announce = server.announce_port != 0;
+    server.announce_address = 0x7F000001u; // Loopback: macOS does not deliver its own broadcasts.
+    server.confirm_pairing = [decision](const std::string& mac, const std::string& code) {
+        std::printf("PAIR %s %s\n", mac.c_str(), code.c_str()); std::fflush(stdout); return decision == "accept";
+    };
     return server.run(stop, [](const std::string& s) { std::printf("STATUS %s\n", s.c_str()); std::fflush(stdout); }) ? 0 : 1;
 }

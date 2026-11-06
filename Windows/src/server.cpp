@@ -1,4 +1,5 @@
 #include "prison/server.hpp"
+#include "prison/pairing.hpp"
 #include <openssl/err.h>
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
@@ -101,13 +102,61 @@ bool AgentServer::run(const std::atomic<bool>& stop, const Status& status) {
     if (bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 || listen(listener, 4) != 0) {
         close_socket(listener); status("El puerto " + std::to_string(port_) + " está ocupado. ¿Hay otra copia abierta?"); return false;
     }
-    status("Esperando al Mac. Escribe esta clave en PRISON DISPLAY del Mac.");
+    // Plain TCP for pairing (protected by the key agreement and the code) and a
+    // UDP broadcast so the Mac finds this PC.
+    Socket pair_listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in pair_address = address; pair_address.sin_port = htons(pairing_port);
+    if (pair_listener != invalid_socket) {
+        setsockopt(pair_listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof yes);
+        if (bind(pair_listener, reinterpret_cast<sockaddr*>(&pair_address), sizeof pair_address) != 0 || listen(pair_listener, 2) != 0) { close_socket(pair_listener); pair_listener = invalid_socket; }
+    }
+    Socket beacon = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (beacon != invalid_socket) setsockopt(beacon, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof yes);
+    std::uint64_t last_beacon = 0;
+    std::string agent_name, agent_version;
+    { std::lock_guard<std::mutex> lock(mutex_); agent_name = agent_.name(); agent_version = agent_.version(); }
+    Socket pair_socket = invalid_socket; Parser pair_parser; std::unique_ptr<PairingSession> pairing; std::uint64_t pair_started = 0;
+    auto end_pairing = [&] { if (pair_socket != invalid_socket) close_socket(pair_socket); pair_socket = invalid_socket; pairing.reset(); pair_parser = Parser(); };
+    auto pair_write = [&](const std::vector<Packet>& packets) {
+        for (const auto& packet : packets) { const auto bytes = frame(packet); if (send(pair_socket, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), 0) != static_cast<int>(bytes.size())) return false; }
+        return true;
+    };
+    status("Esperando al Mac. En el Mac pulsa «Buscar y emparejar», o escribe esta clave.");
     std::unique_ptr<Connection> client;
     auto drop = [&](const std::string& reason) {
         { std::lock_guard<std::mutex> lock(mutex_); agent_.disconnect(); }
         client.reset(); status(reason);
     };
     while (!stop) {
+        if (announce && beacon != invalid_socket && now_ms() - last_beacon > 2000) {
+            last_beacon = now_ms();
+            const auto message = pc_announcement(agent_name, agent_version, port_, pairing_port);
+            sockaddr_in to{}; to.sin_family = AF_INET; to.sin_port = htons(announce_port); to.sin_addr.s_addr = htonl(announce_address);
+            sendto(beacon, message.data(), static_cast<int>(message.size()), 0, reinterpret_cast<sockaddr*>(&to), sizeof to);
+        }
+        bool pair_ready = false, pair_data = false;
+        readable(pair_listener, pair_socket, 0, pair_ready, pair_data);
+        if (pair_ready) {
+            Socket incoming = accept(pair_listener, nullptr, nullptr);
+            if (incoming != invalid_socket) {
+                end_pairing(); pair_socket = incoming; pair_started = now_ms();
+                pairing = std::make_unique<PairingSession>(agent_name, agent_version, key_, port_, confirm_pairing);
+            }
+        }
+        if (pairing && pair_data) {
+            std::uint8_t buffer[4096];
+            const int count = static_cast<int>(recv(pair_socket, reinterpret_cast<char*>(buffer), sizeof buffer, 0));
+            bool ok = count > 0;
+            try {
+                if (ok) pair_parser.feed(Bytes(buffer, buffer + count), [&](Packet packet) { if (ok) ok = pair_write(pairing->receive(packet)); });
+                if (ok && pairing->needs_decision()) { status("Un Mac quiere emparejarse. Comprueba el código en las dos pantallas."); ok = pair_write(pairing->decide()); }
+            } catch (const std::exception&) { ok = false; }
+            if (!ok || pairing->finished()) {
+                if (pairing && pairing->finished() && ok) status("Emparejado. El Mac ya puede conectar.");
+                end_pairing();
+            }
+        }
+        if (pairing && now_ms() - pair_started > 120000) end_pairing();
         bool listen_ready = false, client_ready = false;
         if (!readable(listener, client ? client->socket : invalid_socket, 100, listen_ready, client_ready)) break;
         if (client && SSL_pending(client->ssl) > 0) client_ready = true;
@@ -165,6 +214,9 @@ bool AgentServer::run(const std::atomic<bool>& stop, const Status& status) {
         }
     }
     client.reset();
+    end_pairing();
+    if (pair_listener != invalid_socket) close_socket(pair_listener);
+    if (beacon != invalid_socket) close_socket(beacon);
     { std::lock_guard<std::mutex> lock(mutex_); agent_.disconnect(); }
     close_socket(listener);
     return true;

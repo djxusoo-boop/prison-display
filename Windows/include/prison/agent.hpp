@@ -54,6 +54,8 @@ public:
     bool greeted() const { return greeted_; }
     bool controlling() const { return token_ != 0; }
     const std::string& peer_name() const { return peer_; }
+    const std::string& name() const { return name_; }
+    const std::string& version() const { return version_; }
 private:
     void end_lease();
     void keyboard(const Keyboard& message);

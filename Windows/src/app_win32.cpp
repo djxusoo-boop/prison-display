@@ -18,10 +18,12 @@
 
 namespace {
 constexpr wchar_t kClassName[] = L"PrisonDisplayWindows";
-constexpr wchar_t kVersion[] = L"0.2.1";
-constexpr char kVersionUtf8[] = "0.2.1";
+constexpr wchar_t kVersion[] = L"0.2.2";
+constexpr char kVersionUtf8[] = "0.2.2";
 constexpr UINT kStatusMessage = WM_APP + 1;
 constexpr UINT kSetClipboard = WM_APP + 2;
+constexpr UINT kConfirmPairing = WM_APP + 3;
+struct PairingQuestion { std::string mac, code; bool accepted = false; };
 HWND g_window = nullptr;
 
 std::wstring widen(const std::string& text) {
@@ -199,7 +201,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         std::wstring status; { std::lock_guard<std::mutex> lock(g_status_mutex); status = g_status; }
         text(dc, 44, 122, L"Estado", RGB(150, 155, 170), 16, FW_SEMIBOLD);
         text(dc, 44, 144, status, RGB(90, 220, 145), 20, FW_SEMIBOLD);
-        text(dc, 44, 196, L"En el Mac: PRISON DISPLAY → Enviar pantalla → PC con Windows", RGB(205, 210, 225));
+        text(dc, 44, 196, L"En el Mac: Enviar pantalla → PC con Windows → «Buscar y emparejar» (o escribe la dirección y la clave)", RGB(205, 210, 225));
         text(dc, 44, 236, L"Dirección de este PC", RGB(150, 155, 170), 16, FW_SEMIBOLD);
         text(dc, 44, 258, g_addresses, RGB(245, 245, 250), 24, FW_SEMIBOLD);
         text(dc, 44, 302, L"Clave", RGB(150, 155, 170), 16, FW_SEMIBOLD);
@@ -211,6 +213,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     }
     case kStatusMessage: InvalidateRect(window, nullptr, FALSE); return 0;
+    case kConfirmPairing: {
+        auto* question = reinterpret_cast<PairingQuestion*>(lparam);
+        ShowWindow(window, SW_RESTORE); SetForegroundWindow(window);
+        const std::string code = question->code.substr(0, 3) + " " + question->code.substr(3);
+        const std::wstring text = L"El Mac «" + widen(question->mac) + L"» quiere usar este PC con su ratón, teclado y portapapeles.\n\n"
+            L"Código: " + widen(code) + L"\n\n¿Es el mismo código que muestra el Mac?";
+        question->accepted = MessageBoxW(window, text.c_str(), L"PRISON DISPLAY · Emparejar con un Mac", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST) == IDYES;
+        return 0;
+    }
     case kSetClipboard: {
         const auto& text = *reinterpret_cast<const std::string*>(lparam);
         const std::wstring wide = widen(text);
@@ -264,6 +275,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     std::uint32_t width = 0, height = 0; screen_size(width, height);
     g_agent = std::make_unique<prison::InputAgent>(g_sink, narrow(g_name).empty() ? "PC con Windows" : narrow(g_name), kVersionUtf8, width, height);
     g_server = std::make_unique<prison::AgentServer>(*g_agent, key);
+    g_server->confirm_pairing = [](const std::string& mac, const std::string& code) {
+        PairingQuestion question{mac, code};
+        if (g_window) SendMessageW(g_window, kConfirmPairing, 0, reinterpret_cast<LPARAM>(&question));
+        return question.accepted;
+    };
 
     WNDCLASSW klass{}; klass.hInstance = instance; klass.lpfnWndProc = window_proc; klass.lpszClassName = kClassName;
     klass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));

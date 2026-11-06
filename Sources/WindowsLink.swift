@@ -2,6 +2,7 @@
 import AppKit
 import Network
 import Security
+import CryptoKit
 
 extension Wire {
     // The PC app has its own version. Another protocol revision is accepted
@@ -60,6 +61,110 @@ struct PCLinkSettings: Equatable {
     }
 }
 let pcInputPort: UInt16 = 37941
+
+// A PC announcing itself on the local network.
+struct FoundPC: Equatable {
+    let name: String, version: String, host: String, inputPort: UInt16, pairingPort: UInt16
+    // "PRISON-PC/1|name|version|input port|pairing port"
+    init?(announcement: String, from host: String) {
+        let f = announcement.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard f.count == 5, f[0] == "PRISON-PC/1", let name = Wire.normalizedPeerName(f[1]), Wire.normalizedVersion(f[2]) != nil,
+              let input = UInt16(f[3]), let pair = UInt16(f[4]), input > 0, pair > 0, !host.isEmpty else { return nil }
+        self.name = name; version = f[2]; self.host = host; inputPort = input; pairingPort = pair
+    }
+}
+enum PCDiscovery {
+    // Listens for PC broadcasts for a few seconds (background thread).
+    static func scan(seconds: Double = 4, port: UInt16 = 37930, completion: @escaping ([FoundPC]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var found: [FoundPC] = []
+            let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+            guard fd >= 0 else { DispatchQueue.main.async { completion([]) }; return }
+            defer { close(fd) }
+            var yes: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+            var timeout = timeval(tv_sec: 0, tv_usec: 250_000)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var address = sockaddr_in(); address.sin_family = sa_family_t(AF_INET); address.sin_port = port.bigEndian; address.sin_addr.s_addr = INADDR_ANY
+            let bound = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+            guard bound == 0 else { DispatchQueue.main.async { completion([]) }; return }
+            let deadline = Date().addingTimeInterval(seconds)
+            var buffer = [UInt8](repeating: 0, count: 512)
+            while Date() < deadline {
+                var source = sockaddr_in(); var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+                let count = withUnsafeMutablePointer(to: &source) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, &buffer, buffer.count, 0, $0, &length) } }
+                guard count > 0, let text = String(bytes: buffer[0..<count], encoding: .utf8) else { continue }
+                var ip = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN)); var addr = source.sin_addr
+                inet_ntop(AF_INET, &addr, &ip, socklen_t(INET_ADDRSTRLEN))
+                if let pc = FoundPC(announcement: text, from: String(cString: ip)), !found.contains(where: { $0.host == pc.host }) { found.append(pc) }
+            }
+            DispatchQueue.main.async { completion(found) }
+        }
+    }
+}
+
+// Pair with a PC without typing its key: P-256 agreement, the same 6-digit
+// code on both screens, then the PC key arrives encrypted (AES-GCM).
+final class PCPairing {
+    private let queue = DispatchQueue(label: "PrisonDisplay.pc-pairing")
+    private var peer: Peer?
+    func start(host: String, port: UInt16, confirm: @escaping (String, String, @escaping (Bool) -> Void) -> Void,
+               completion: @escaping (Result<(key: String, port: UInt16, name: String), Error>) -> Void) {
+        queue.async {
+            guard let nwPort = NWEndpoint.Port(rawValue: port) else { DispatchQueue.main.async { completion(.failure(AireError("Puerto inválido."))) }; return }
+            let privateKey = P256.KeyAgreement.PrivateKey()
+            let own = privateKey.publicKey.x963Representation
+            var key: SymmetricKey?, transcript = Data(), pcName = "PC", accepted = false, done = false
+            let p = Peer(NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: discoveryParameters()), queue: self.queue, timeoutSeconds: 120)
+            self.peer = p
+            func finish(_ result: Result<(key: String, port: UInt16, name: String), Error>) {
+                guard !done else { return }; done = true
+                p.onEnd = nil; p.end(); self.peer = nil
+                DispatchQueue.main.async { completion(result) }
+            }
+            p.onReady = {
+                let name = Wire.normalizedPeerName(Host.current().localizedName ?? "Mac") ?? "Mac"
+                p.send(.hello, Data("pc-pair-v1|\(name)|\(own.base64EncodedString())".utf8))
+            }
+            p.onPacket = { kind, data in
+                do {
+                    switch kind {
+                    case .hello:
+                        guard key == nil, data.count <= 1024, let text = String(data: data, encoding: .utf8) else { throw AireError("Respuesta del PC inválida.") }
+                        let f = text.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                        guard f.count == 3, f[0] == "pc-pair-v1", let name = Wire.normalizedPeerName(f[1]), let remote = Data(base64Encoded: f[2]) else { throw AireError("Respuesta del PC inválida.") }
+                        let pcPublic = try P256.KeyAgreement.PublicKey(x963Representation: remote)
+                        transcript = Data("PRISON-PC-pair-v1".utf8) + own + remote
+                        let shared = try privateKey.sharedSecretFromKeyAgreement(with: pcPublic)
+                        let derived = shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data("AireDisplay pairing".utf8), sharedInfo: transcript, outputByteCount: 32)
+                        key = derived; pcName = name
+                        let digest = derived.withUnsafeBytes { SHA256.hash(data: Data($0) + Data("verify".utf8)) }
+                        let value = digest.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                        let code = String(format: "%06u", value % 1_000_000)
+                        DispatchQueue.main.async {
+                            confirm(name, code) { ok in self.queue.async {
+                                if ok { accepted = true; p.send(.ack) } else { p.send(.failure, Data("Cancelado en el Mac.".utf8)); finish(.failure(AireError("Emparejamiento cancelado."))) }
+                            } }
+                        }
+                    case .video:
+                        guard accepted, let key = key, data.count <= 1024 else { throw AireError("El PC envió la clave sin confirmación.") }
+                        let plain = try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: key, authenticating: transcript)
+                        let f = (String(data: plain, encoding: .utf8) ?? "").split(separator: "|").map(String.init)
+                        guard f.count == 3, let port = UInt16(f[1]), port > 0 else { throw AireError("Datos del PC inválidos.") }
+                        finish(.success((try normalizedKey(f[0]), port, pcName)))
+                    case .failure:
+                        throw AireError(String(data: data.prefix(256), encoding: .utf8) ?? "El PC rechazó el emparejamiento.")
+                    default: break
+                    }
+                } catch { finish(.failure(error)) }
+            }
+            p.onEnd = { reason in finish(.failure(AireError("Emparejamiento interrumpido: \(reason)"))) }
+            p.start()
+        }
+    }
+    func cancel() { queue.async { let p = self.peer; self.peer = nil; p?.end() } }
+}
 
 // The Mac's own mouse and keyboard continue onto a Windows PC: cross the chosen
 // edge of the outermost display and the PC takes them; come back by the same

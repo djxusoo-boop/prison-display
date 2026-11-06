@@ -9,3 +9,5 @@ Windows/build/native-test/prison_core_tests Windows/tests/fixtures | tail -1
 Windows/build/native-test/prison_agent_tests | tail -1
 xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D UNIFIED Sources/Protocol.swift Sources/Pointer.swift Sources/DesktopControl.swift Sources/WindowsLink.swift build/Version.swift Tests/WindowsLink/main.swift -o build/WindowsLinkTests
 build/WindowsLinkTests "$PWD/Windows/build/native-test/prison_agent_host"
+xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target arm64-apple-macosx13.0 -D UNIFIED Sources/Protocol.swift Sources/Pointer.swift Sources/DesktopControl.swift Sources/WindowsLink.swift build/Version.swift Tests/PCPairing/main.swift -o build/PCPairingTests
+build/PCPairingTests "$PWD/Windows/build/native-test/prison_agent_host"
