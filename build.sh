@@ -24,6 +24,13 @@ for arch in arm64 x86_64; do
     extra=(-D LEGACY build/LegacySecurity-x86_64.o "$dependency/libssl.a" "$dependency/libcrypto.a")
   fi
   xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -D UNIFIED -target "$arch-apple-macosx$minimum" -sdk "$sdk" "${shared[@]}" "${extra[@]}" "build/VirtualDisplay-$arch.o" "build/LegacyCapture-$arch.o" -import-objc-header Sources/UnifiedBridge.h -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' Sources/main.swift -o "build/Unified-$arch"
+  # Xcode 27's Swift CoreMedia library re-exports CoreMedia, so the C calls are
+  # bound to it. On macOS 10.13 and 12 it does not exist or lacks them: bind them
+  # straight to CoreMedia (the Intel slice uses only C CoreMedia symbols).
+  if [[ "$arch" == x86_64 ]]; then
+    if xcrun dyld_info -imports "build/Unified-$arch" | grep libswiftCoreMedia | grep -qv '^ *_[k]*CM'; then print 'Símbolo Swift de CoreMedia en Intel'; exit 1; fi
+    xcrun install_name_tool -change @rpath/libswiftCoreMedia.dylib /System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia "build/Unified-$arch" 2>/dev/null
+  fi
 done
 # The receiver is built first: the MacBook app carries it (and the Windows
 # app) so it can update the iMac and the PC automatically.

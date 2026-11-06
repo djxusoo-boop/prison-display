@@ -172,7 +172,7 @@ final class H264Encoder {
     private func encodeOnQueue(_ pixel: CVPixelBuffer, stamp value: Stamp) {
         guard let s = session else { return }
         let stamp = Unmanaged.passRetained(value)
-        let status = VTCompressionSessionEncodeFrame(s, imageBuffer: pixel, presentationTimeStamp: CMTime(value: Int64(monotonicNS()), timescale: 1_000_000_000), duration: CMTime(value: 1, timescale: Int32(fps)), frameProperties: nil, sourceFrameRefcon: stamp.toOpaque(), infoFlagsOut: nil)
+        let status = VTCompressionSessionEncodeFrame(s, imageBuffer: pixel, presentationTimeStamp: CMTimeMake(value: Int64(monotonicNS()), timescale: 1_000_000_000), duration: CMTimeMake(value: 1, timescale: Int32(fps)), frameProperties: nil, sourceFrameRefcon: stamp.toOpaque(), infoFlagsOut: nil)
         if status != noErr { stamp.release(); onError?("Error al codificar: \(status)"); return }
         if completeEachFrame {
             let completion = VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid)

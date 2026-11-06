@@ -1,4 +1,5 @@
 ## 0.4.27 · Todo en su sitio · Windows 0.3.0
+- Arreglo: las apps no abrían en el iMac (macOS 12) ni en el MacBook Pro (10.13) al compilar con Xcode 27; las llamadas a CoreMedia del binario Intel se enlazan ahora directamente a CoreMedia.
 - Barra lateral por apartados: PANTALLAS (Enviar, Añadir, Recibir), HERRAMIENTAS (Mapa de pantallas, Monitor HDMI, PC con Windows) y OPCIONES. Cada herramienta tiene su propia página con instrucciones de 1-2-3.
 - Monitor HDMI: se usa el modo nativo real del monitor y solo se ofrecen escritorios hasta 3840 × 2160, que el Mac reduce por hardware (el ratón va fluido). Si un tamaño no va por hardware, se deshace y se avisa.
 - PC con Windows: «Buscar y emparejar» primero; la conexión manual queda como alternativa.

@@ -43,7 +43,7 @@ final class ScreenKitCapture: NSObject, SCStreamOutput, SCStreamDelegate {
                     return
                 }
                 let config = SCStreamConfiguration(); config.width = width; config.height = height
-                config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(fps)); config.queueDepth = 3
+                config.minimumFrameInterval = CMTimeMake(value: 1, timescale: Int32(fps)); config.queueDepth = 3
                 #if DIAGNOSTIC_SCENE
                 if CommandLine.arguments.contains("capture-five") { config.queueDepth = 5 }
                 #endif

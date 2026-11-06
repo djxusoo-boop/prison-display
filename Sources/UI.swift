@@ -339,7 +339,7 @@ final class VideoView: NSView {
         var sample: CMSampleBuffer?
         var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
         guard CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pixel, formatDescription: f, sampleTiming: &timing, sampleBufferOut: &sample) == noErr, let s = sample else { throw AireError("No se pudo preparar la imagen.") }
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(s, createIfNecessary: true) as? [NSMutableDictionary] { attachments.first?[kCMSampleAttachmentKey_DisplayImmediately] = true }
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(s, createIfNecessary: true) as? [NSMutableDictionary] { attachments.first?["DisplayImmediately" as NSString] = true } // literal key: the Swift CoreMedia constant is missing on macOS 12
         if videoLayer.status == .failed { videoLayer.flush() }
         guard videoLayer.isReadyForMoreMediaData else { backpressureFrames += 1; return false }
         videoLayer.enqueue(s)
