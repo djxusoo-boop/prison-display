@@ -68,6 +68,11 @@ enum CorrectionStore {
         guard let data = defaults.data(forKey: key(display)), let saved = try? JSONDecoder().decode(CorrectionSettings.self, from: data) else { return CorrectionSettings() }
         return saved
     }
+    // Whether the correction was left on for this monitor: it starts again by
+    // itself when the monitor is connected or the app opens. Only stopping it
+    // by hand (button or ⌃⌥⌘D) clears it.
+    static func autoStart(_ display: CGDirectDisplayID) -> Bool { defaults.bool(forKey: key(display) + ".auto") }
+    static func setAutoStart(_ on: Bool, for display: CGDirectDisplayID) { defaults.set(on, forKey: key(display) + ".auto") }
     static func save(_ settings: CorrectionSettings, for display: CGDirectDisplayID) {
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: key(display)) }
     }
@@ -137,6 +142,14 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var framesShown = 0
     private(set) var note = ""
     var onStopped: ((String) -> Void)?
+    // Called with the monitor when the user stops it (not on disconnection or quit).
+    var onUserStopped: ((CGDirectDisplayID) -> Void)?
+    func stopByUser() {
+        guard active else { return }
+        let display = physical
+        stop(reason: "Corrección detenida. No volverá a arrancar sola hasta que pulses Empezar.")
+        onUserStopped?(display)
+    }
     var onRestarted: (() -> Void)?
     var active: Bool { virtual != nil }
     private var virtual: ADVirtualScreen?
@@ -387,7 +400,7 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         InstallEventHandler(GetApplicationEventTarget(), { _, _, data in
             guard let data = data else { return noErr }
             let engine = Unmanaged<CorrectionEngine>.fromOpaque(data).takeUnretainedValue()
-            DispatchQueue.main.async { engine.stop() }
+            DispatchQueue.main.async { engine.stopByUser() }
             return noErr
         }, 1, &spec, me, &hotKeyHandler)
         let id = EventHotKeyID(signature: OSType(0x50524453), id: 1)
@@ -477,6 +490,12 @@ final class CorrectionPage: NSObject {
         slider("top", "Superior", 0, 400, unit: " px", in: margins)
         slider("bottom", "Inferior", 0, 400, unit: " px", in: margins)
         engine.onStopped = { [weak self] reason in self?.refresh(reason) }
+        engine.onUserStopped = { display in CorrectionStore.setAutoStart(false, for: display) }
+        // Start again by itself when the monitor comes back or the app opens.
+        NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        if !CommandLine.arguments.contains("--layout-preview") && !CommandLine.arguments.contains("--correction-self-test") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.autoStartIfNeeded() }
+        }
         engine.onRestarted = { [weak self] in self?.refresh("Tamaño del escritorio cambiado.") }
         reload()
     }
@@ -500,16 +519,31 @@ final class CorrectionPage: NSObject {
         let (w, h) = CorrectionSettings.desktopSizes[max(0, desktopPopup.indexOfSelectedItem)]
         settings.desktopWidth = w; settings.desktopHeight = h; changed()
     }
+    private var autoPending: DispatchWorkItem?
+    @objc private func screensChanged() {
+        // Wait for macOS to settle (a monitor appears in steps), then check once.
+        autoPending?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.autoStartIfNeeded() }
+        autoPending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+    func autoStartIfNeeded() {
+        guard !engine.active, !engine.restarting else { return }
+        guard let id = CorrectionDisplays.candidates().first(where: { CorrectionStore.autoStart($0) }) else { return }
+        let saved = CorrectionStore.load(id)
+        if let error = engine.start(display: id, settings: saved) { reload(); refresh("No se pudo reanudar la corrección: \(error)"); return }
+        settings = saved; reload(); refresh("Corrección reanudada con tus ajustes guardados.")
+    }
     @objc private func chooseAspect() {
         settings.screenAspect = CorrectionSettings.screenAspects[max(0, aspectPopup.indexOfSelectedItem)].1; changed()
     }
     @objc private func toggle() {
         guard !engine.restarting else { return }
-        if engine.active { engine.stop(); return }
+        if engine.active { engine.stopByUser(); return }
         guard let id = selected else { refresh("Conecta el monitor como pantalla ampliada."); return }
         startButton.isEnabled = false; statusLabel.stringValue = "Preparando el escritorio corregido…"
         DispatchQueue.main.async {
             let error = self.engine.start(display: id, settings: self.settings)
+            if error == nil { CorrectionStore.setAutoStart(true, for: id) }
             self.startButton.isEnabled = true
             self.refresh(error)
         }
