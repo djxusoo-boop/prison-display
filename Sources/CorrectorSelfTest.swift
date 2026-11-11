@@ -61,8 +61,9 @@ final class CorrectionSelfTest: NSObject, NSApplicationDelegate {
         var big = base; big.scale = 1.5
         var tall = base; tall.desktopWidth = 1920; tall.desktopHeight = 1200
         var tv = base; tv.screenAspect = nil
+        var narrow = tv; narrow.width = 75
         let cases = [Case(name: "1-centrado", settings: base), Case(name: "2-margenes", settings: margins), Case(name: "3-escala-y-desplazamiento", settings: moved),
-                     Case(name: "4-esquina-sin-cortar", settings: corner), Case(name: "5-escala-maxima-sin-cortar", settings: big), Case(name: "6-escritorio-16x10", settings: tall), Case(name: "7-forma-real-de-la-TV", settings: tv)]
+                     Case(name: "4-esquina-sin-cortar", settings: corner), Case(name: "5-escala-maxima-sin-cortar", settings: big), Case(name: "6-escritorio-16x10", settings: tall), Case(name: "7-forma-real-de-la-TV", settings: tv), Case(name: "8-solo-anchura-75", settings: narrow)]
         var index = 0
         func next() {
             guard index < cases.count else { return pointerAndStop(monitor: monitor, origin: originalOrigin) }
@@ -101,7 +102,8 @@ final class CorrectionSelfTest: NSObject, NSApplicationDelegate {
         let k = CorrectionSettings.stretch(frame: frame, settings: item.settings, physicalAspect: physical)
         check(engine.imageRect == expected, "\(item.name): el compositor usa el rectángulo calculado \(Int(expected.width))×\(Int(expected.height)) en (\(Int(expected.minX)), \(Int(expected.minY)))")
         check(expected.minX >= 0 && expected.minY >= 0 && expected.maxX <= frame.width && expected.maxY <= frame.height, "\(item.name): la imagen cabe entera en el monitor")
-        let ratio = (expected.width * k / expected.height) / (CGFloat(item.settings.desktopWidth) / CGFloat(item.settings.desktopHeight))
+        let widthFactor = CGFloat(item.settings.width ?? 100) / 100
+        let ratio = (expected.width * k / widthFactor / expected.height) / (CGFloat(item.settings.desktopWidth) / CGFloat(item.settings.desktopHeight))
         check(abs(ratio - 1) < 0.01, "\(item.name): en la pantalla se ve con la proporción del escritorio (estirado de la TV ×\(String(format: "%.3f", k)), proporción \(String(format: "%.3f", ratio)))")
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, _ in
             guard let display = content?.displays.first(where: { $0.displayID == monitor }) else {

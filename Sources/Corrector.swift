@@ -21,6 +21,10 @@ struct CorrectionSettings: Codable, Equatable {
     // 5:4 signal across a 16:9 panel; the image is pre-squeezed to match so it
     // looks right on the glass. nil = automatic (physical size from the monitor).
     var screenAspect: Double?
+    // Only the width, in percent (nil = 100): narrows or widens the picture
+    // without changing its height, to match the TV by eye.
+    var width: Double?
+    static let widthRange = 40.0...160.0
     static let screenAspects: [(String, Double?)] = [("Automática", nil), ("16:9 · TV panorámica", 16.0 / 9), ("16:10", 16.0 / 10), ("4:3", 4.0 / 3), ("5:4 · sin estirar", 5.0 / 4)]
     static let desktopSizes: [(Int, Int)] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (1680, 1050), (1920, 1200)]
     static let scaleRange = 0.3...1.5
@@ -38,7 +42,8 @@ struct CorrectionSettings: Codable, Equatable {
         // In signal pixels the desktop is narrower by the monitor's own stretch,
         // so on the screen it keeps its real proportion.
         let k = stretch(frame: frame, settings: settings, physicalAspect: physicalAspect)
-        let dw = max(1, desktop.width / k), dh = max(1, desktop.height)
+        let widthFactor = CGFloat(min(max((settings.width ?? 100).isFinite ? (settings.width ?? 100) : 100, widthRange.lowerBound), widthRange.upperBound) / 100)
+        let dw = max(1, desktop.width / k * widthFactor), dh = max(1, desktop.height)
         func margin(_ v: Double, _ size: CGFloat) -> CGFloat { min(max(0, CGFloat(v.isFinite ? v : 0)), size * 0.4) }
         let l = margin(settings.left, w), r = margin(settings.right, w), t = margin(settings.top, h), b = margin(settings.bottom, h)
         let area = CGRect(x: l, y: t, width: max(1, w - l - r), height: max(1, h - t - b))
@@ -463,6 +468,7 @@ final class CorrectionPage: NSObject {
 
         let size = card("2 · TAMAÑO Y POSICIÓN")
         slider("scale", "Escala", 30, 150, unit: " %", in: size)
+        slider("width", "Anchura (solo ancho)", CorrectionSettings.widthRange.lowerBound, CorrectionSettings.widthRange.upperBound, unit: " %", in: size)
         slider("offsetX", "Mover horizontal", -640, 640, unit: " px", in: size)
         slider("offsetY", "Mover vertical", -512, 512, unit: " px", in: size)
         let margins = card("3 · MÁRGENES (para la parte que la TV recorta)")
@@ -515,6 +521,7 @@ final class CorrectionPage: NSObject {
         let value = slider.doubleValue.rounded()
         switch key {
         case "scale": settings.scale = value / 100
+        case "width": settings.width = value == 100 ? nil : value
         case "offsetX": settings.offsetX = value
         case "offsetY": settings.offsetY = value
         case "left": settings.left = value
@@ -531,14 +538,14 @@ final class CorrectionPage: NSObject {
         refresh(nil)
     }
     private func showSettings() {
-        let values: [String: Double] = ["scale": settings.scale * 100, "offsetX": settings.offsetX, "offsetY": settings.offsetY, "left": settings.left, "right": settings.right, "top": settings.top, "bottom": settings.bottom]
+        let values: [String: Double] = ["scale": settings.scale * 100, "width": settings.width ?? 100, "offsetX": settings.offsetX, "offsetY": settings.offsetY, "left": settings.left, "right": settings.right, "top": settings.top, "bottom": settings.bottom]
         for (key, value) in values { sliders[key]?.0.doubleValue = value; sliders[key]?.1.stringValue = label(key, value) }
         if let index = CorrectionSettings.desktopSizes.firstIndex(where: { $0.0 == settings.desktopWidth && $0.1 == settings.desktopHeight }) { desktopPopup.selectItem(at: index) }
         let automatic = selected.flatMap { CorrectionDisplays.physicalAspect($0) }
         aspectPopup.item(at: 0)?.title = "Automática · " + CorrectionDisplays.aspectName(automatic)
         aspectPopup.selectItem(at: CorrectionSettings.screenAspects.firstIndex(where: { $0.1 == settings.screenAspect }) ?? 0)
     }
-    private func label(_ key: String, _ value: Double) -> String { key == "scale" ? "\(Int(value)) %" : "\(Int(value)) px" }
+    private func label(_ key: String, _ value: Double) -> String { key == "scale" || key == "width" ? "\(Int(value)) %" : "\(Int(value)) px" }
     private func refresh(_ message: String?) {
         startButton.title = engine.active ? "Detener corrección" : "Empezar corrección"
         monitorPopup.isEnabled = !engine.active

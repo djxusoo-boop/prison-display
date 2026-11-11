@@ -45,4 +45,13 @@ let k = CorrectionSettings.stretch(frame: vga, settings: tv10, physicalAspect: n
 check(abs((r.width * k / r.height) / 1.6 - 1) < 0.01 && r.minX > 0 && r.minY == 0, "16:10 en TV 16:9: bordes a los lados y proporción correcta en pantalla \(r)")
 var five = CorrectionSettings(); five.screenAspect = 1.25
 check(CorrectionSettings.layout(frame: vga, desktop: hd, settings: five, physicalAspect: 16.0 / 9) == CGRect(x: 0, y: 152, width: 1280, height: 720), "5:4 elegido a mano manda sobre el automático")
+// Only the width: height stays, width changes, never past the monitor.
+var narrow = CorrectionSettings(); narrow.screenAspect = 16.0 / 9; narrow.width = 80
+r = CorrectionSettings.layout(frame: vga, desktop: hd, settings: narrow)
+check(r.height == 1024 && r.width == 1024 && r.minX == 128, "anchura 80 %: misma altura, más estrecho y centrado \(r)")
+narrow.width = 160
+r = CorrectionSettings.layout(frame: vga, desktop: hd, settings: narrow)
+check(r.width <= 1280 && r.minX >= 0 && r.maxY <= 1024, "anchura 160 % no se sale del monitor \(r)")
+narrow.width = 10
+check(CorrectionSettings.layout(frame: vga, desktop: hd, settings: narrow).width == 512, "anchura limitada al 40 %")
 print("RESULT \(checks) checks \(failures) failures"); exit(failures == 0 ? 0 : 1)
