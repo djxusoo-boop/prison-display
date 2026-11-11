@@ -272,6 +272,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         edit.addItem(withTitle: "Copiar", action: #selector(NSText.copy(_:)), keyEquivalent: "c"); edit.addItem(withTitle: "Pegar", action: #selector(NSText.paste(_:)), keyEquivalent: "v"); edit.addItem(withTitle: "Seleccionar todo", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         NSApp.mainMenu = menu
         LocalBrightness.reapplySoftware()
+        PhysicalDisplays.enforce()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             LocalBrightness.reapplySoftware(); if self?.tool == .brightness { self?.refreshBrightnessPage() }
         }
@@ -442,14 +443,17 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     private func displayRows() -> [DisplaysPage.Row] {
         typealias Row = DisplaysPage.Row
         var rows = [Row(title: "Pantalla del Mac", detail: "Integrada · siempre activa: desde ella controlas todo.", on: true, enabled: false, toggle: nil)]
-        let online = PhysicalDisplays.online()
-        for id in online where CGDisplayIsBuiltin(id) == 0 && CGDisplayVendorNumber(id) != 0xA1DE && CGDisplayIsActive(id) != 0 {
+        for id in PhysicalDisplays.externals() {
             let name = PhysicalDisplays.name(id)
+            let off = PhysicalDisplays.isOff(id)
             let mirrored = CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay
-            rows.append(Row(title: name, detail: "Monitor externo · \(PhysicalDisplays.modeText(id))" + (mirrored ? " · duplicando otra pantalla" : "") + (PhysicalDisplays.available ? "" : " · este macOS no deja apagarlo"), on: true, enabled: PhysicalDisplays.available, toggle: { on in PhysicalDisplays.setEnabled(id, on, name: name) }))
-        }
-        for (id, name) in PhysicalDisplays.disabled.sorted(by: { $0.value < $1.value }) where !(online.contains(id) && CGDisplayIsActive(id) != 0) {
-            rows.append(Row(title: name, detail: "Monitor externo apagado · actívalo aquí (o desconecta y vuelve a conectar el cable).", on: false, enabled: true, toggle: { on in PhysicalDisplays.setEnabled(id, on, name: name) }))
+            let detail = off ? "Monitor externo apagado (en negro). Marca la casilla para encenderlo." : "Monitor externo · \(PhysicalDisplays.modeText(id))" + (mirrored ? " · duplicando la pantalla del Mac" : "")
+            rows.append(Row(title: name, detail: detail, on: !off, enabled: true, toggle: { [weak self] on in
+                #if !LEGACY
+                // The corrected desktop uses this monitor: stop it first.
+                if !on, #available(macOS 12.3, *), let page = self?.correctionPageStorage as? CorrectionPage, page.engine.active, page.engine.physical == id { _ = page.setActive(false) }
+                #endif
+                return PhysicalDisplays.setEnabled(id, on, name: name) }))
         }
         if role == .send {
             for (slot, panel) in [(0, sender), (1, secondSender)] where slot == 0 || secondEnabled {

@@ -1,34 +1,30 @@
 #if UNIFIED
 import AppKit
 
-// Physical monitors can be switched off and on without unplugging them
-// (macOS keeps the cable connected but stops using the monitor). Uses the
-// same private call as the system for this; if it is missing, the switch is
-// shown disabled. Disabled monitors are remembered so they can be turned on
-// again; unplugging and plugging the cable also turns them on.
+// Physical monitors are switched "off" in a way that can always be undone:
+// the monitor stops being part of the desktop (it mirrors the Mac's screen,
+// so windows go back to the Mac) and its picture is blacked out through its
+// own colour table. Turning it on removes both. Only public calls; the black
+// picture disappears by itself if the app quits. (Disabling a display
+// outright is avoided: macOS does not always bring it back.)
 enum PhysicalDisplays {
-    private typealias Enable = @convention(c) (CGDisplayConfigRef?, CGDirectDisplayID, Bool) -> CGError
-    private static let enableCall: Enable? = {
-        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSConfigureDisplayEnabled") else { return nil }
-        return unsafeBitCast(symbol, to: Enable.self)
-    }()
-    static var available: Bool { enableCall != nil }
+    static var available: Bool { true }
     static var defaults = UserDefaults.standard
-    private static let key = "PrisonDisplay.disabledDisplays"
-    // Disabled monitors: display id → name.
-    static var disabled: [CGDirectDisplayID: String] {
-        let saved = defaults.dictionary(forKey: key) as? [String: String] ?? [:]
-        return Dictionary(uniqueKeysWithValues: saved.compactMap { k, v in UInt32(k).map { ($0, v) } })
+    private static let key = "PrisonDisplay.offDisplays"
+    // Switched-off monitors: stable key (vendor-model-serial) → name.
+    static var off: [String: String] { defaults.dictionary(forKey: key) as? [String: String] ?? [:] }
+    static func stableKey(_ id: CGDirectDisplayID) -> String {
+        String(format: "%x-%x-%x", CGDisplayVendorNumber(id), CGDisplayModelNumber(id), CGDisplaySerialNumber(id))
     }
+    static func isOff(_ id: CGDirectDisplayID) -> Bool { off[stableKey(id)] != nil }
     private static func remember(_ id: CGDirectDisplayID, name: String?) {
-        var saved = defaults.dictionary(forKey: key) as? [String: String] ?? [:]
-        saved[String(id)] = name; defaults.set(saved, forKey: key)
+        var saved = off; saved[stableKey(id)] = name; defaults.set(saved, forKey: key)
     }
     static func name(_ id: CGDirectDisplayID) -> String {
         if #available(macOS 10.15, *) {
             for screen in NSScreen.screens where (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id { return screen.localizedName }
         }
-        return "Monitor externo"
+        return off[stableKey(id)] ?? "Monitor externo"
     }
     static func modeText(_ id: CGDirectDisplayID) -> String {
         guard let mode = CGDisplayCopyDisplayMode(id) else { return "" }
@@ -39,25 +35,54 @@ enum PhysicalDisplays {
         guard CGGetOnlineDisplayList(32, &ids, &count) == .success else { return [] }
         return Array(ids.prefix(Int(count)))
     }
-    // Monitors that came back (cable re-plugged) are no longer listed as off.
-    static func forgetReturned() {
-        let active = Set(online().filter { CGDisplayIsActive($0) != 0 })
-        for id in disabled.keys where active.contains(id) { remember(id, name: nil) }
+    // External monitors connected now (switched off or not).
+    static func externals() -> [CGDirectDisplayID] {
+        online().filter { CGDisplayIsBuiltin($0) == 0 && CGDisplayVendorNumber($0) != 0xA1DE }
     }
-    @discardableResult static func setEnabled(_ id: CGDirectDisplayID, _ on: Bool, name: String) -> String? {
-        guard let call = enableCall else { return "Este macOS no permite apagar monitores desde una app." }
-        if !on {
-            guard CGDisplayIsBuiltin(id) == 0, id != CGMainDisplayID() else { return "La pantalla del Mac y la principal no se apagan: desde ellas controlas todo." }
-            let others = online().filter { $0 != id && CGDisplayIsActive($0) != 0 && CGDisplayVendorNumber($0) != 0xA1DE }
-            guard !others.isEmpty else { return "Debe quedar al menos otra pantalla encendida." }
+    private static var blackTimer: Timer?
+    // Keep switched-off monitors black (colour profiles can reload the table).
+    static func enforce() {
+        for id in externals() where isOff(id) {
+            if CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay { mirror(id, of: CGMainDisplayID()) }
+            CGSetDisplayTransferByFormula(id, 0, 0, 1, 0, 0, 1, 0, 0, 1)
         }
+        if off.isEmpty { blackTimer?.invalidate(); blackTimer = nil }
+        else if blackTimer == nil {
+            let timer = Timer(timeInterval: 2, repeats: true) { _ in enforce() }
+            RunLoop.main.add(timer, forMode: .common); blackTimer = timer
+        }
+    }
+    @discardableResult private static func mirror(_ id: CGDirectDisplayID, of main: CGDirectDisplayID) -> Bool {
         var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success else { return "macOS no aceptó el cambio." }
-        guard call(config, id, on) == .success, CGCompleteDisplayConfiguration(config, .forSession) == .success else {
-            CGCancelDisplayConfiguration(config); return "macOS no aceptó el cambio."
+        guard CGBeginDisplayConfiguration(&config) == .success else { return false }
+        CGConfigureDisplayMirrorOfDisplay(config, id, main)
+        return CGCompleteDisplayConfiguration(config, .forSession) == .success
+    }
+    // Main thread. Returns an error message, or nil once the change is real.
+    @discardableResult static func setEnabled(_ id: CGDirectDisplayID, _ on: Bool, name: String) -> String? {
+        guard CGDisplayIsBuiltin(id) == 0, CGDisplayVendorNumber(id) != 0xA1DE else { return "La pantalla del Mac no se apaga: desde ella controlas todo." }
+        if !on {
+            remember(id, name: name)
+            guard mirror(id, of: CGMainDisplayID()) else { remember(id, name: nil); return "macOS no aceptó el cambio." }
+            enforce()
+            return nil
         }
-        remember(id, name: on ? nil : name)
-        return nil
+        remember(id, name: nil)
+        guard mirror(id, of: kCGNullDirectDisplay) else { return "macOS no aceptó el cambio." }
+        CGDisplayRestoreColorSyncSettings()
+        // Restoring the profiles also undoes software brightness: put it back.
+        LocalBrightness.reapplySoftware()
+        enforce()
+        let back = waitUntil(seconds: 5) { CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay && online().contains(id) }
+        return back ? nil : "La TV no volvió como pantalla aparte. Desconecta y vuelve a conectar su cable."
+    }
+    private static func waitUntil(seconds: Double, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() {
+            if Date() > deadline { return false }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        return true
     }
 }
 
@@ -109,7 +134,7 @@ final class DisplaysPage: NSObject {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
     }
-    @objc private func changed() { PhysicalDisplays.forgetReturned(); refresh() }
+    @objc private func changed() { PhysicalDisplays.enforce(); refresh() }
     func refresh() {
         let current = rows?() ?? []
         let key = current.map { "\($0.title)|\($0.detail)|\($0.on)|\($0.enabled)" }.joined(separator: ";")
