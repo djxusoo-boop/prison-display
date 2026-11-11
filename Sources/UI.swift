@@ -1923,6 +1923,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var localDisplayIDs: [CGDirectDisplayID] = []
     private var localProfiles: [DisplayResolutionProfile] = []
     private var localVirtual: ADVirtualScreen?
+    var localVirtualActive: Bool { localVirtual != nil }
     private var localPhysicalDisplay: CGDirectDisplayID = 0
     private var localPhysicalOrigin = CGPoint.zero
     var connectionLink: ConnectionLink?

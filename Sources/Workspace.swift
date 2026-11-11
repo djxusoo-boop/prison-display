@@ -70,7 +70,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     let sendButton = RoleButton(title: "↗  Enviar pantalla", target: nil, action: nil)
     let receiveButton = RoleButton(title: "↙  Recibir pantalla", target: nil, action: nil)
     // Tools have their own pages; nil shows the selected screen role.
-    enum Tool: Int { case map, hdmi, pc, brightness, correction }
+    enum Tool: Int { case map, hdmi, pc, brightness, correction, displays }
     private(set) var tool: Tool?
     let mapButton = RoleButton(title: "▦  Mapa de pantallas", target: nil, action: nil)
     let hdmiButton = RoleButton(title: "▭  Monitor HDMI", target: nil, action: nil)
@@ -78,6 +78,8 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     let brightnessButton = RoleButton(title: "☀  Brillo", target: nil, action: nil)
     let brightnessPage = BrightnessPage()
     let correctionButton = RoleButton(title: "⧉  Corregir monitor", target: nil, action: nil)
+    let displaysButton = RoleButton(title: "▣  Pantallas", target: nil, action: nil)
+    let displaysPage = DisplaysPage()
     #if !LEGACY
     private var correctionPageStorage: AnyObject?
     #endif
@@ -187,14 +189,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             button.setAccessibilityLabel(title == "−" ? "Bajar brillo conjunto" : "Subir brillo conjunto"); brightnessButtons.addArrangedSubview(button)
         }
         autoStartStatus.font = .systemFont(ofSize: 11); autoStartStatus.textColor = NSColor(calibratedWhite: 0.7, alpha: 1); autoStartStatus.isHidden = true
-        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         icon.widthAnchor.constraint(equalToConstant: 56).isActive = true; icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
-        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
+        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
         side.setCustomSpacing(22, after: screenSummary); side.setCustomSpacing(22, after: pcButton)
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         for button in [sendButton, secondSendButton, receiveButton] { button.heightAnchor.constraint(equalToConstant: 46).isActive = true; button.target = self; button.isBordered = false }
-        for button in [mapButton, brightnessButton, hdmiButton, correctionButton, pcButton] { button.heightAnchor.constraint(equalToConstant: 40).isActive = true; button.target = self; button.isBordered = false; button.action = #selector(chooseTool(_:)) }
-        mapButton.tag = Tool.map.rawValue; brightnessButton.tag = Tool.brightness.rawValue; correctionButton.tag = Tool.correction.rawValue; hdmiButton.tag = Tool.hdmi.rawValue; pcButton.tag = Tool.pc.rawValue
+        for button in [displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton] { button.heightAnchor.constraint(equalToConstant: 40).isActive = true; button.target = self; button.isBordered = false; button.action = #selector(chooseTool(_:)) }
+        mapButton.tag = Tool.map.rawValue; brightnessButton.tag = Tool.brightness.rawValue; correctionButton.tag = Tool.correction.rawValue; displaysButton.tag = Tool.displays.rawValue; hdmiButton.tag = Tool.hdmi.rawValue; pcButton.tag = Tool.pc.rawValue
         sendButton.action = #selector(chooseSend); secondSendButton.action = #selector(chooseSecondSend); receiveButton.action = #selector(chooseReceive)
         let version = versionButton
         version.font = .systemFont(ofSize: 11); version.alignment = .left; version.isBordered = false; version.bezelStyle = .inline
@@ -244,6 +246,8 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         ])
         toolPages = [.map: sender.mapPage, .hdmi: sender.hdmiPage, .pc: sender.pcPage].compactMapValues { $0 }
         toolPages[.brightness] = brightnessPage.view
+        toolPages[.displays] = displaysPage.view
+        displaysPage.rows = { [weak self] in self?.displayRows() ?? [] }
         correctionButton.isHidden = true
         #if !LEGACY
         if #available(macOS 12.3, *) {
@@ -434,6 +438,36 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         let count = brightnessResults.count
         brightnessStatus.stringValue = "Confirmado en \(count) Mac\n" + rows.joined(separator: "\n") + (timedOut ? "\nSolo se confirman los Mac que responden." : "")
     }
+    // Every screen of this Mac with its own switch.
+    private func displayRows() -> [DisplaysPage.Row] {
+        typealias Row = DisplaysPage.Row
+        var rows = [Row(title: "Pantalla del Mac", detail: "Integrada · siempre activa: desde ella controlas todo.", on: true, enabled: false, toggle: nil)]
+        let online = PhysicalDisplays.online()
+        for id in online where CGDisplayIsBuiltin(id) == 0 && CGDisplayVendorNumber(id) != 0xA1DE && CGDisplayIsActive(id) != 0 {
+            let name = PhysicalDisplays.name(id)
+            let mirrored = CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay
+            rows.append(Row(title: name, detail: "Monitor externo · \(PhysicalDisplays.modeText(id))" + (mirrored ? " · duplicando otra pantalla" : "") + (PhysicalDisplays.available ? "" : " · este macOS no deja apagarlo"), on: true, enabled: PhysicalDisplays.available, toggle: { on in PhysicalDisplays.setEnabled(id, on, name: name) }))
+        }
+        for (id, name) in PhysicalDisplays.disabled.sorted(by: { $0.value < $1.value }) where !(online.contains(id) && CGDisplayIsActive(id) != 0) {
+            rows.append(Row(title: name, detail: "Monitor externo apagado · actívalo aquí (o desconecta y vuelve a conectar el cable).", on: false, enabled: true, toggle: { on in PhysicalDisplays.setEnabled(id, on, name: name) }))
+        }
+        if role == .send {
+            for (slot, panel) in [(0, sender), (1, secondSender)] where slot == 0 || secondEnabled {
+                let phase = panel.engine.phase
+                rows.append(Row(title: "Pantalla virtual · " + WorkspaceScreenNames.label(slot: slot, defaults: workspaceDefaults), detail: "Para otro Mac · " + phase.title, on: phase != .idle && phase != .failed, enabled: true, toggle: { on in if on { panel.start() } else { panel.stop() }; return nil }))
+            }
+            rows.append(Row(title: "Monitor HDMI ampliado", detail: "Escritorio virtual más grande en el monitor externo (apartado Monitor HDMI).", on: sender.localVirtualActive, enabled: true, toggle: { [weak self] on in
+                guard let self = self else { return nil }
+                if on { self.sender.startLocalVirtualDisplay() } else { self.sender.stopLocalVirtualDisplay() }
+                return on && !self.sender.localVirtualActive ? "No se pudo activar: mira el apartado Monitor HDMI." : nil }))
+        }
+        #if !LEGACY
+        if #available(macOS 12.3, *), let page = correctionPageStorage as? CorrectionPage {
+            rows.append(Row(title: "Escritorio corregido", detail: "Virtual, dibujado en el monitor externo con tus ajustes (apartado Corregir monitor).", on: page.engine.active, enabled: true, toggle: { on in page.setActive(on) }))
+        }
+        #endif
+        return rows
+    }
     private func activate() {
         if role == .send {
             sender.activateWorkspace()
@@ -467,14 +501,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         secondSendContent?.isHidden = tool != nil || role != .send || selectedScreen != 1
         receiveContent?.isHidden = tool != nil || role != .receive
         for (kind, page) in toolPages { page.isHidden = tool != kind }
-        mapButton.selected = tool == .map; brightnessButton.selected = tool == .brightness; correctionButton.selected = tool == .correction; hdmiButton.selected = tool == .hdmi; pcButton.selected = tool == .pc
+        mapButton.selected = tool == .map; brightnessButton.selected = tool == .brightness; correctionButton.selected = tool == .correction; displaysButton.selected = tool == .displays; displaysPage.setVisible(tool == .displays); hdmiButton.selected = tool == .hdmi; pcButton.selected = tool == .pc
         secondSendButton.isHidden = role != .send
         sendButton.selected = tool == nil && role == .send && selectedScreen == 0; secondSendButton.selected = tool == nil && role == .send && selectedScreen == 1;
         sendButton.title = expertMode && role == .send ? WorkspaceScreenNames.buttonTitle(slot: 0, defaults: workspaceDefaults) : "↗  Enviar pantalla"; secondSendButton.title = expertMode ? (WorkspaceScreenNames.name(slot: 1, defaults: workspaceDefaults) == nil ? "↗  Añadir pantalla" : WorkspaceScreenNames.buttonTitle(slot: 1, defaults: workspaceDefaults)) : "↗  Añadir pantalla"; receiveButton.selected = tool == nil && role == .receive
         heading.stringValue = role.title
         if let tool = tool {
-            heading.stringValue = ["Mapa de pantallas", "Monitor HDMI", "PC con Windows", "Brillo", "Corregir monitor"][tool.rawValue]
-            descriptionLabel.stringValue = ["Coloca tus pantallas y el PC arrastrándolos.", "Más espacio de escritorio en un monitor conectado por cable.", "Usa el ratón, el teclado y el portapapeles de este Mac en tu PC.", "Sube o baja el brillo de todas las pantallas a la vez o de cada una por separado.", "Muestra el escritorio completo en un monitor o TV con otra proporción, sin deformarlo ni cortarlo."][tool.rawValue]
+            heading.stringValue = ["Mapa de pantallas", "Monitor HDMI", "PC con Windows", "Brillo", "Corregir monitor", "Pantallas"][tool.rawValue]
+            descriptionLabel.stringValue = ["Coloca tus pantallas y el PC arrastrándolos.", "Más espacio de escritorio en un monitor conectado por cable.", "Usa el ratón, el teclado y el portapapeles de este Mac en tu PC.", "Sube o baja el brillo de todas las pantallas a la vez o de cada una por separado.", "Muestra el escritorio completo en un monitor o TV con otra proporción, sin deformarlo ni cortarlo.", "Elige qué pantallas, virtuales o externas, están activas."][tool.rawValue]
             return
         }
         descriptionLabel.stringValue = !expertMode ? (role == .send ? "En el otro Mac, elige Recibir pantalla y selecciona este equipo." : "Pulsa Conectar junto al Mac disponible o enlazado. La primera vez, confirma el código.") : role == .send ? "\(WorkspaceScreenNames.label(slot: selectedScreen, defaults: workspaceDefaults)) · Cada receptor tiene su escritorio, conexión y ajustes." : role.detail

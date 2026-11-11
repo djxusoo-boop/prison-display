@@ -12,7 +12,7 @@ sdk=$(xcrun --show-sdk-path)
 runtime="$(xcrun --find swiftc)"
 runtime="${runtime:h:h}/lib/swift-5.0/macosx"
 [[ -d "$runtime" ]] || { print 'Falta el runtime Swift para High Sierra'; exit 1; }
-shared=(Sources/DesktopControl.swift Sources/Recovery.swift Sources/Preferences.swift Sources/Startup.swift Sources/Protocol.swift Sources/Cursor.swift Sources/Pairing.swift Sources/Pointer.swift Sources/Latency.swift Sources/Video.swift Sources/UI.swift Sources/Capture.swift Sources/Workspace.swift Sources/LegacyNetwork.swift Sources/LegacyCrypto.swift Sources/WindowsLink.swift Sources/Brightness.swift Sources/OldCopies.swift Sources/Corrector.swift Sources/CorrectorSelfTest.swift build/SendPanel.swift build/ReceivePanel.swift build/Version.swift)
+shared=(Sources/DesktopControl.swift Sources/Recovery.swift Sources/Preferences.swift Sources/Startup.swift Sources/Protocol.swift Sources/Cursor.swift Sources/Pairing.swift Sources/Pointer.swift Sources/Latency.swift Sources/Video.swift Sources/UI.swift Sources/Capture.swift Sources/Workspace.swift Sources/LegacyNetwork.swift Sources/LegacyCrypto.swift Sources/WindowsLink.swift Sources/Brightness.swift Sources/OldCopies.swift Sources/Corrector.swift Sources/CorrectorSelfTest.swift Sources/DisplaysPage.swift build/SendPanel.swift build/ReceivePanel.swift build/Version.swift)
 for arch in arm64 x86_64; do
   minimum=11.0; extra=()
   [[ "$arch" == x86_64 ]] && minimum=10.13

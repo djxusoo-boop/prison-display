@@ -519,6 +519,16 @@ final class CorrectionPage: NSObject {
         let (w, h) = CorrectionSettings.desktopSizes[max(0, desktopPopup.indexOfSelectedItem)]
         settings.desktopWidth = w; settings.desktopHeight = h; changed()
     }
+    // For the "Pantallas" list: switch the corrected desktop on or off.
+    func setActive(_ on: Bool) -> String? {
+        guard on else { engine.stopByUser(); refresh(nil); return nil }
+        guard !engine.active, !engine.restarting else { return nil }
+        guard let id = selected ?? CorrectionDisplays.candidates().first else { return "Conecta el monitor como pantalla ampliada." }
+        let saved = CorrectionStore.load(id)
+        if let error = engine.start(display: id, settings: saved) { return error }
+        CorrectionStore.setAutoStart(true, for: id); settings = saved; reload()
+        return nil
+    }
     private var autoPending: DispatchWorkItem?
     @objc private func screensChanged() {
         // Wait for macOS to settle (a monitor appears in steps), then check once.
