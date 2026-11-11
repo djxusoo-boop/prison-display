@@ -34,6 +34,14 @@ if let identifier = Bundle.main.bundleIdentifier, !CommandLine.arguments.contain
         other.terminate()
     }
 }
+#if UNIFIED && !LEGACY
+// Real check of the corrected-monitor compositor on the connected monitor.
+if let index = CommandLine.arguments.firstIndex(of: "--correction-self-test") {
+    let folder = CommandLine.arguments.count > index + 1 ? URL(fileURLWithPath: CommandLine.arguments[index + 1]) : FileManager.default.temporaryDirectory.appendingPathComponent("PrisonCorrection")
+    if #available(macOS 14.0, *) { CorrectionSelfTest.run(folder: folder) }
+    print("Necesita macOS 14 o posterior"); exit(2)
+}
+#endif
 let app = NSApplication.shared
 #if UNIFIED
 let controller = PrisonWorkspaceController()

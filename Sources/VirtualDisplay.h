@@ -5,7 +5,8 @@
 @property(nonatomic, readonly) CGDirectDisplayID displayID;
 @property(nonatomic) NSTimeInterval startupTimeout;
 // Slot zero retains the original remote monitor identity; slot two is reserved
-// for the optional local high-resolution monitor shown through HDMI.
+// for the optional local high-resolution monitor shown through HDMI; slot
+// three is the desktop drawn, adjusted, onto a corrected external monitor.
 @property(nonatomic) NSUInteger screenSlot;
 - (BOOL)createWidth:(NSUInteger)width height:(NSUInteger)height error:(NSString **)error;
 - (BOOL)resizeWidth:(NSUInteger)width height:(NSUInteger)height error:(NSString **)error;

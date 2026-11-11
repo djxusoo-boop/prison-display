@@ -70,13 +70,17 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     let sendButton = RoleButton(title: "↗  Enviar pantalla", target: nil, action: nil)
     let receiveButton = RoleButton(title: "↙  Recibir pantalla", target: nil, action: nil)
     // Tools have their own pages; nil shows the selected screen role.
-    enum Tool: Int { case map, hdmi, pc, brightness }
+    enum Tool: Int { case map, hdmi, pc, brightness, correction }
     private(set) var tool: Tool?
     let mapButton = RoleButton(title: "▦  Mapa de pantallas", target: nil, action: nil)
     let hdmiButton = RoleButton(title: "▭  Monitor HDMI", target: nil, action: nil)
     let pcButton = RoleButton(title: "⊞  PC con Windows", target: nil, action: nil)
     let brightnessButton = RoleButton(title: "☀  Brillo", target: nil, action: nil)
     let brightnessPage = BrightnessPage()
+    let correctionButton = RoleButton(title: "⧉  Corregir monitor", target: nil, action: nil)
+    #if !LEGACY
+    private var correctionPageStorage: AnyObject?
+    #endif
     private var brightnessNodes: [UUID: BrightnessNode] = [:]
     private var brightnessQueryTimer: Timer?
     private lazy var brightnessHostName = Host.current().localizedName ?? "Este Mac"
@@ -145,7 +149,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         sender.window.contentView = nil; secondSender.window.contentView = nil; receiver.window.contentView = nil
         let height = min(900, (NSScreen.main?.visibleFrame.height ?? 950)-70)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: height), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "PRISON DISPLAY · v\(AppVersion.current)"
+        window.title = "PRISON DISPLAY · v\(AppVersion.current)" + (TestBuild.active ? " · COPIA DE PRUEBA" : "")
         window.minSize = NSSize(width: 860, height: 560); window.isReleasedWhenClosed = false; window.delegate = self
         window.backgroundColor = NSColor(calibratedRed: 0.065, green: 0.075, blue: 0.09, alpha: 1)
         if #available(macOS 10.14, *) { window.appearance = NSAppearance(named: .darkAqua) } else { window.appearance = NSAppearance(named: .vibrantDark) }
@@ -183,14 +187,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             button.setAccessibilityLabel(title == "−" ? "Bajar brillo conjunto" : "Subir brillo conjunto"); brightnessButtons.addArrangedSubview(button)
         }
         autoStartStatus.font = .systemFont(ofSize: 11); autoStartStatus.textColor = NSColor(calibratedWhite: 0.7, alpha: 1); autoStartStatus.isHidden = true
-        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, brightnessButton, hdmiButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         icon.widthAnchor.constraint(equalToConstant: 56).isActive = true; icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
-        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, brightnessButton, hdmiButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
+        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
         side.setCustomSpacing(22, after: screenSummary); side.setCustomSpacing(22, after: pcButton)
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         for button in [sendButton, secondSendButton, receiveButton] { button.heightAnchor.constraint(equalToConstant: 46).isActive = true; button.target = self; button.isBordered = false }
-        for button in [mapButton, brightnessButton, hdmiButton, pcButton] { button.heightAnchor.constraint(equalToConstant: 40).isActive = true; button.target = self; button.isBordered = false; button.action = #selector(chooseTool(_:)) }
-        mapButton.tag = Tool.map.rawValue; brightnessButton.tag = Tool.brightness.rawValue; hdmiButton.tag = Tool.hdmi.rawValue; pcButton.tag = Tool.pc.rawValue
+        for button in [mapButton, brightnessButton, hdmiButton, correctionButton, pcButton] { button.heightAnchor.constraint(equalToConstant: 40).isActive = true; button.target = self; button.isBordered = false; button.action = #selector(chooseTool(_:)) }
+        mapButton.tag = Tool.map.rawValue; brightnessButton.tag = Tool.brightness.rawValue; correctionButton.tag = Tool.correction.rawValue; hdmiButton.tag = Tool.hdmi.rawValue; pcButton.tag = Tool.pc.rawValue
         sendButton.action = #selector(chooseSend); secondSendButton.action = #selector(chooseSecondSend); receiveButton.action = #selector(chooseReceive)
         let version = versionButton
         version.font = .systemFont(ofSize: 11); version.alignment = .left; version.isBordered = false; version.bezelStyle = .inline
@@ -240,6 +244,16 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         ])
         toolPages = [.map: sender.mapPage, .hdmi: sender.hdmiPage, .pc: sender.pcPage].compactMapValues { $0 }
         toolPages[.brightness] = brightnessPage.view
+        correctionButton.isHidden = true
+        #if !LEGACY
+        if #available(macOS 12.3, *) {
+            let page = CorrectionPage(); correctionPageStorage = page
+            toolPages[.correction] = page.view; correctionButton.isHidden = false
+            NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                if self?.tool == .correction, !page.engine.active { page.reload() }
+            }
+        }
+        #endif
         brightnessPage.onSet = { [weak self] target, percent in self?.setBrightness(target: target, percent: percent) }
         pcButton.isHidden = toolPages[.pc] == nil
         for view in [sendContent!, secondSendContent!, receiveContent!] + Array(toolPages.values) {
@@ -274,6 +288,11 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     @objc private func toggleClipboard() { ClipboardSync.shared.enabled = clipboardSwitch.state == .on }
     @objc private func toggleExpertMode() { setExpertMode(expertSwitch.state == .on) }
     private func applyAutoStartPreference() {
+        if TestBuild.active {
+            autoStartSwitch.isEnabled = false
+            autoStartStatus.stringValue = "Copia de prueba: no se abre al iniciar sesión ni cambia la app instalada."; autoStartStatus.isHidden = false
+            return
+        }
         guard LoginItemManager.supportsSystemManagedStartup else {
             // Keep the agent pointing at this copy (it may have been moved or updated).
             if LegacyLoginAgent.isEnabled() { try? LegacyLoginAgent.setEnabled(true) }
@@ -448,14 +467,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         secondSendContent?.isHidden = tool != nil || role != .send || selectedScreen != 1
         receiveContent?.isHidden = tool != nil || role != .receive
         for (kind, page) in toolPages { page.isHidden = tool != kind }
-        mapButton.selected = tool == .map; brightnessButton.selected = tool == .brightness; hdmiButton.selected = tool == .hdmi; pcButton.selected = tool == .pc
+        mapButton.selected = tool == .map; brightnessButton.selected = tool == .brightness; correctionButton.selected = tool == .correction; hdmiButton.selected = tool == .hdmi; pcButton.selected = tool == .pc
         secondSendButton.isHidden = role != .send
         sendButton.selected = tool == nil && role == .send && selectedScreen == 0; secondSendButton.selected = tool == nil && role == .send && selectedScreen == 1;
         sendButton.title = expertMode && role == .send ? WorkspaceScreenNames.buttonTitle(slot: 0, defaults: workspaceDefaults) : "↗  Enviar pantalla"; secondSendButton.title = expertMode ? (WorkspaceScreenNames.name(slot: 1, defaults: workspaceDefaults) == nil ? "↗  Añadir pantalla" : WorkspaceScreenNames.buttonTitle(slot: 1, defaults: workspaceDefaults)) : "↗  Añadir pantalla"; receiveButton.selected = tool == nil && role == .receive
         heading.stringValue = role.title
         if let tool = tool {
-            heading.stringValue = ["Mapa de pantallas", "Monitor HDMI", "PC con Windows", "Brillo"][tool.rawValue]
-            descriptionLabel.stringValue = ["Coloca tus pantallas y el PC arrastrándolos.", "Más espacio de escritorio en un monitor conectado por cable.", "Usa el ratón, el teclado y el portapapeles de este Mac en tu PC.", "Sube o baja el brillo de todas las pantallas a la vez o de cada una por separado."][tool.rawValue]
+            heading.stringValue = ["Mapa de pantallas", "Monitor HDMI", "PC con Windows", "Brillo", "Corregir monitor"][tool.rawValue]
+            descriptionLabel.stringValue = ["Coloca tus pantallas y el PC arrastrándolos.", "Más espacio de escritorio en un monitor conectado por cable.", "Usa el ratón, el teclado y el portapapeles de este Mac en tu PC.", "Sube o baja el brillo de todas las pantallas a la vez o de cada una por separado.", "Muestra el escritorio completo en un monitor o TV con otra proporción, sin deformarlo ni cortarlo."][tool.rawValue]
             return
         }
         descriptionLabel.stringValue = !expertMode ? (role == .send ? "En el otro Mac, elige Recibir pantalla y selecciona este equipo." : "Pulsa Conectar junto al Mac disponible o enlazado. La primera vez, confirma el código.") : role == .send ? "\(WorkspaceScreenNames.label(slot: selectedScreen, defaults: workspaceDefaults)) · Cada receptor tiene su escritorio, conexión y ajustes." : role.detail
@@ -469,7 +488,12 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         if !CommandLine.arguments.contains("--layout-preview") { UserDefaults.standard.set(role.rawValue, forKey: "PrisonDisplay.workspace.role") }
         refreshRole(); activate()
     }
-    @objc func chooseTool(_ sender: NSButton) { tool = Tool(rawValue: sender.tag); refreshRole(); refreshBrightnessQueries() }
+    @objc func chooseTool(_ sender: NSButton) {
+        tool = Tool(rawValue: sender.tag); refreshRole(); refreshBrightnessQueries()
+        #if !LEGACY
+        if tool == .correction, #available(macOS 12.3, *), let page = correctionPageStorage as? CorrectionPage, !page.engine.active { page.reload() }
+        #endif
+    }
     @objc func chooseSend() { tool = nil; refreshBrightnessQueries(); select(.send); selectedScreen = 0; refreshRole() }
     @objc func chooseSecondSend() {
         tool = nil; refreshBrightnessQueries(); select(.send); selectedScreen = 1; secondEnabled = true
@@ -508,7 +532,11 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         #endif
         receiver.applicationWillResignActive(notification)
     }
-    func applicationWillTerminate(_ notification: Notification) { summaryTimer?.invalidate(); summaryTimer = nil; brightnessQueryTimer?.invalidate(); brightnessPending?.cancel(); brightnessDeadline?.invalidate(); sender.deactivateWorkspace(); secondSender.deactivateWorkspace(); receiver.deactivateWorkspace()
+    func applicationWillTerminate(_ notification: Notification) { summaryTimer?.invalidate(); summaryTimer = nil; brightnessQueryTimer?.invalidate();
+        #if !LEGACY
+        if #available(macOS 12.3, *) { (correctionPageStorage as? CorrectionPage)?.engine.stop(reason: nil) }
+        #endif
+        brightnessPending?.cancel(); brightnessDeadline?.invalidate(); sender.deactivateWorkspace(); secondSender.deactivateWorkspace(); receiver.deactivateWorkspace()
         #if !LEGACY
         WindowsLink.shared.bridge.stop()
         #endif

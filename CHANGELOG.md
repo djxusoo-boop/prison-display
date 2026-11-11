@@ -1,3 +1,10 @@
+## 0.4.29 · Corregir monitor (VGA / TV)
+- Nuevo apartado Herramientas → Corregir monitor: el escritorio del Mac (16:9 o 16:10) se dibuja dentro de la señal del monitor (p. ej. 1280 × 1024) sin deformarlo ni cortarlo, con bordes negros donde sobre.
+- Escala global, desplazamiento horizontal y vertical, márgenes izquierdo/derecho/superior/inferior, «Centrar y ajustar» y forma real de la pantalla (para TV que estiran la señal). Ajustes guardados por monitor.
+- La pantalla del Mac no cambia; se detiene con el botón o con ⌃⌥⌘D.
+- Prueba real en el monitor: `--correction-self-test <carpeta>` comprueba píxel a píxel lo que sale por el cable.
+- Copia de prueba separada (`Packaging/make-test-app.sh`): no se actualiza, no actualiza a otros equipos, no se abre al iniciar sesión y no toca la app instalada.
+
 ## 0.4.28 · Brillo de cada pantalla y una sola copia
 - Nuevo apartado Herramientas → Brillo: todas las pantallas a la vez, todas las de un Mac o cada una por separado, desde cualquier Mac conectado.
 - Los monitores que no aceptan brillo por el cable (como el HDMI del Air) se oscurecen desde la app conservando su perfil de color.

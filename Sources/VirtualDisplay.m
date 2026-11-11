@@ -73,6 +73,7 @@ static int ADSelectExactMode(CGDirectDisplayID display, NSUInteger width, NSUInt
 static NSString *ADLayoutKey(NSUInteger slot) {
     if (slot == 0) return @"PrisonDisplay.layout";
     if (slot == 1) return @"PrisonDisplay.layout.2";
+    if (slot == 3) return @"PrisonDisplay.layout.corrected";
     return @"PrisonDisplay.layout.local";
 }
 @implementation ADVirtualScreen {
@@ -100,7 +101,7 @@ static NSString *ADLayoutKey(NSUInteger slot) {
     }
     @try {
         CGVirtualDisplayDescriptor *d = [[descriptorClass alloc] init];
-        d.name = self.screenSlot == 0 ? @"PRISON DISPLAY · Pantalla remota" : (self.screenSlot == 1 ? @"PRISON DISPLAY · Pantalla 2" : @"PRISON DISPLAY · Monitor virtual local");
+        d.name = self.screenSlot == 0 ? @"PRISON DISPLAY · Pantalla remota" : (self.screenSlot == 1 ? @"PRISON DISPLAY · Pantalla 2" : (self.screenSlot == 3 ? @"PRISON DISPLAY · Escritorio corregido" : @"PRISON DISPLAY · Monitor virtual local"));
         d.maxPixelsWide = (unsigned int)width; d.maxPixelsHigh = (unsigned int)height;
         d.sizeInMillimeters = CGSizeMake(width * 25.4 / 100, height * 25.4 / 100);
         d.vendorID = 0xA1DE; d.productID = 1 + (unsigned int)self.screenSlot;
@@ -110,6 +111,8 @@ static NSString *ADLayoutKey(NSUInteger slot) {
         // The local HDMI virtual monitor keeps a separate product identity per
         // desktop size so a remembered mode of another size is never reused.
         if (self.screenSlot == 2) d.productID = 0x5200u | ADLocalProfile(width, height);
+        // Slot three: the desktop drawn by the corrected-monitor compositor.
+        if (self.screenSlot == 3) d.productID = 0x5300u | ADLocalProfile(width, height);
         d.serialNum = serial;
         if ([d respondsToSelector:@selector(setSerialNumber:)]) d.serialNumber = serial;
         d.redPrimary = CGPointMake(0.64, 0.33); d.greenPrimary = CGPointMake(0.30, 0.60);
@@ -290,7 +293,7 @@ static NSString *ADLayoutKey(NSUInteger slot) {
 + (int)runHelper:(NSArray<NSString *> *)arguments {
     if (arguments.count != 5 && arguments.count != 6) return 2;
     NSUInteger slot = arguments.count == 6 ? arguments[5].integerValue : 0;
-    if (slot > 2) return 2;
+    if (slot > 3) return 2;
     NSUInteger width = arguments[2].integerValue, height = arguments[3].integerValue;
     // Remote screens are limited by the H.264 stream; the local HDMI desktop
     // is only scaled by WindowServer and can be larger (up to 5K).

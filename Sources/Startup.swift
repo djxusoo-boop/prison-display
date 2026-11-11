@@ -105,3 +105,11 @@ enum LegacyLoginAgent {
         try data.write(to: file, options: .atomic)
     }
 }
+
+// A separate test copy (Info.plist key PrisonDisplayTestBuild) is run beside
+// the installed app before replacing it. It must not change anything the
+// installed copy owns: no updates in either direction, no login item and no
+// removal of "old" copies (the installed one would look like one).
+enum TestBuild {
+    static var active: Bool { Bundle.main.object(forInfoDictionaryKey: "PrisonDisplayTestBuild") as? Bool == true }
+}

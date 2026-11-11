@@ -1521,7 +1521,7 @@ final class DeviceMapView: NSView {
 // carries the iMac build and the Windows app inside Resources/Updates.
 enum AppUpdater {
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "PrisonDisplay.autoUpdate") as? Bool ?? true }
+        get { !TestBuild.active && (UserDefaults.standard.object(forKey: "PrisonDisplay.autoUpdate") as? Bool ?? true) }
         set { UserDefaults.standard.set(newValue, forKey: "PrisonDisplay.autoUpdate") }
     }
     static var updatesFolder: URL? { Bundle.main.resourceURL?.appendingPathComponent("Updates") }
@@ -1667,7 +1667,7 @@ final class UpdateSession {
         switch kind {
         case .updateRequest:
             let request = try UpdateRequest(data)
-            guard !serving, AppVersion.compare(AppVersion.current, request.version) > 0 else { return }
+            guard AppUpdater.enabled, !serving, AppVersion.compare(AppVersion.current, request.version) > 0 else { return }
             serving = true
             let send = self.send, status = self.status, package = self.package
             DispatchQueue.global(qos: .userInitiated).async {

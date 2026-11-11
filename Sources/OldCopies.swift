@@ -36,6 +36,7 @@ enum OldCopies {
 
     // Main thread. Asks once per set of copies; "Ahora no" is remembered.
     static func offerCleanup(defaults: UserDefaults = .standard, window: NSWindow?) {
+        guard !TestBuild.active else { return }
         let copies = find()
         guard !copies.isEmpty else { return }
         let key = "PrisonDisplay.oldCopies.declined"
