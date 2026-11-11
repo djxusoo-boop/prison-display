@@ -34,6 +34,9 @@ if let identifier = Bundle.main.bundleIdentifier, !CommandLine.arguments.contain
         other.terminate()
     }
 }
+#if UNIFIED
+if CommandLine.arguments.contains("--displays-self-test") { DisplaysSelfTest.run() }
+#endif
 #if UNIFIED && !LEGACY
 // Real check of the corrected-monitor compositor on the connected monitor.
 if let index = CommandLine.arguments.firstIndex(of: "--correction-self-test") {

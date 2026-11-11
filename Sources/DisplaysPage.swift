@@ -169,3 +169,40 @@ final class DisplaysPage: NSObject {
     }
 }
 #endif
+
+#if UNIFIED
+// `--displays-self-test`: switches the first external monitor off and on again
+// and checks each step (desktop, black picture, back as its own screen).
+enum DisplaysSelfTest {
+    static func run() -> Never {
+        _ = NSApplication.shared
+        var failures = 0
+        func check(_ ok: Bool, _ title: String) { if !ok { failures += 1 }; print((ok ? "PASS: " : "FAIL: ") + title) }
+        func top(_ id: CGDirectDisplayID) -> Float {
+            var r = [CGGammaValue](repeating: 0, count: 256), g = r, b = r; var n: UInt32 = 0
+            CGGetDisplayTransferByTable(id, 256, &r, &g, &b, &n); return n > 0 ? r[Int(n) - 1] : -1
+        }
+        func settle(_ seconds: Double) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+        guard let id = PhysicalDisplays.externals().first else { print("FAIL: no hay monitor externo conectado"); exit(1) }
+        let name = PhysicalDisplays.name(id), origin = CGDisplayBounds(id).origin
+        print("Monitor: \(name) · \(PhysicalDisplays.modeText(id))")
+        check(CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay, "al empezar es una pantalla aparte")
+        check(PhysicalDisplays.setEnabled(id, false, name: name) == nil, "apagar responde sin error")
+        settle(2)
+        check(PhysicalDisplays.isOff(id), "queda anotado como apagado")
+        check(PhysicalDisplays.online().contains(id), "sigue conectado (no desactivado)")
+        check(CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay, "ya no es escritorio: duplica la pantalla del Mac")
+        check(top(id) < 0.01, "imagen en negro (\(top(id)))")
+        check(CGMainDisplayID() != id && CGDisplayIsBuiltin(CGMainDisplayID()) != 0, "la pantalla del Mac sigue siendo la principal")
+        let error = PhysicalDisplays.setEnabled(id, true, name: name)
+        check(error == nil, "encender responde sin error \(error ?? "")")
+        settle(2)
+        check(!PhysicalDisplays.isOff(id), "ya no está anotado como apagado")
+        check(PhysicalDisplays.online().contains(id) && CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay, "vuelve a ser una pantalla aparte")
+        check(top(id) > 0.9, "imagen normal otra vez (\(top(id)))")
+        let now = CGDisplayBounds(id).origin
+        print("Posición antes \(Int(origin.x)),\(Int(origin.y)) · después \(Int(now.x)),\(Int(now.y))")
+        print("RESULT \(failures) failures"); exit(failures == 0 ? 0 : 1)
+    }
+}
+#endif
