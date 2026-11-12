@@ -1,3 +1,9 @@
+## 0.4.30
+
+- Corregir monitor: si macOS deja la TV en negro al conectarla (pasa con «Preguntar qué mostrar»), la app la enciende sola creando el escritorio corregido y pone tus ajustes guardados.
+- Recuerda la resolución de la TV y de la pantalla del Mac mientras corriges, y las vuelve a poner al encender la TV sola (evita 1920 × 1080 descuadrado por VGA).
+- Los ajustes de cada monitor se copian a los demás Macs conectados con PRISON DISPLAY; gana siempre el cambio más reciente.
+
 ## 0.4.29 · Corregir monitor (VGA / TV)
 - Nuevo apartado Herramientas → Corregir monitor: el escritorio del Mac (16:9 o 16:10) se dibuja dentro de la señal del monitor (p. ej. 1280 × 1024) sin deformarlo ni cortarlo, con bordes negros donde sobre.
 - Escala global, desplazamiento horizontal y vertical, márgenes izquierdo/derecho/superior/inferior, «Centrar y ajustar» y forma real de la pantalla (para TV que estiran la señal). Ajustes guardados por monitor.

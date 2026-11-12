@@ -1,3 +1,4 @@
+import Foundation
 import CoreGraphics
 var checks = 0, failures = 0
 func check(_ ok: Bool, _ title: String) { checks += 1; if !ok { failures += 1; print("FAIL", title) } }
@@ -54,4 +55,28 @@ r = CorrectionSettings.layout(frame: vga, desktop: hd, settings: narrow)
 check(r.width <= 1280 && r.minX >= 0 && r.maxY <= 1024, "anchura 160 % no se sale del monitor \(r)")
 narrow.width = 10
 check(CorrectionSettings.layout(frame: vga, desktop: hd, settings: narrow).width == 512, "anchura limitada al 40 %")
+// Copies between Macs: valid ones are kept only when newer; bad ones are refused.
+let suite = "PrisonDisplay.CorrectionShareTest.\(UUID().uuidString)"
+CorrectionStore.defaults = UserDefaults(suiteName: suite)!
+var tv = CorrectionSettings(); tv.desktopWidth = 1280; tv.desktopHeight = 720; tv.screenAspect = 16.0 / 9
+let shared = CorrectionShare(monitor: "34a9-a027-636", settings: tv, auto: true, mode: [1280, 1024], updated: 1000)
+check(CorrectionStore.merge(shared.data), "guarda la copia de otro Mac")
+check(CorrectionStore.defaults.bool(forKey: "PrisonDisplay.correction.34a9-a027-636.auto"), "la copia trae el arranque automático")
+check(CorrectionStore.defaults.array(forKey: "PrisonDisplay.correction.34a9-a027-636.mode") as? [Int] == [1280, 1024], "la copia trae la resolución del monitor")
+let saved = CorrectionStore.defaults.data(forKey: "PrisonDisplay.correction.34a9-a027-636").flatMap { try? JSONDecoder().decode(CorrectionSettings.self, from: $0) }
+check(saved == tv, "los ajustes llegan iguales")
+var older = tv; older.width = 70
+check(!CorrectionStore.merge(CorrectionShare(monitor: "34a9-a027-636", settings: older, auto: false, mode: nil, updated: 999).data), "una copia más antigua no pisa la nueva")
+check(CorrectionStore.merge(CorrectionShare(monitor: "34a9-a027-636", settings: older, auto: false, mode: nil, updated: 1001).data), "una copia más nueva sí la sustituye")
+check(CorrectionStore.shares().count == 1, "comparte un monitor guardado")
+check(CorrectionStore.shares().compactMap { try? CorrectionShare(data: $0) }.first?.settings.width == 70, "lo compartido es lo último")
+var absurd = tv; absurd.scale = 50
+for (title, share) in [("nombre de monitor raro", CorrectionShare(monitor: "../x", settings: tv, auto: true, mode: nil, updated: 5000)),
+                       ("escala absurda", CorrectionShare(monitor: "1-2-3", settings: absurd, auto: true, mode: nil, updated: 5000)),
+                       ("resolución absurda", CorrectionShare(monitor: "1-2-3", settings: tv, auto: true, mode: [1, 99999], updated: 5000)),
+                       ("hora inválida", CorrectionShare(monitor: "1-2-3", settings: tv, auto: true, mode: nil, updated: -1))] {
+    check(!CorrectionStore.merge(share.data), "rechaza: \(title)")
+}
+check(!CorrectionStore.merge(Data(repeating: 65, count: 2000)), "rechaza datos demasiado grandes")
+UserDefaults().removePersistentDomain(forName: suite)
 print("RESULT \(checks) checks \(failures) failures"); exit(failures == 0 ? 0 : 1)

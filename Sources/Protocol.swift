@@ -104,7 +104,9 @@ enum Wire {
     static let service = "_airedisplay._tcp"
     enum Kind: UInt8 { case hello = 1, video = 2, ack = 3, ping = 4, pong = 5, failure = 6, pointer = 7, cursor = 8, cursorOffer = 9, keyboard = 10, cursorMode = 11, desktopControl = 12, desktopPointer = 13, desktopKeyboard = 14, presented = 15, brightnessCommand = 16, brightnessResult = 17, fullscreenCommand = 18, screenEdges = 19, clipboard = 20,
         // Updates (kept stable across versions): request, offer, chunk, done.
-        updateRequest = 21, updateOffer = 22, updateChunk = 23, updateDone = 24 }
+        updateRequest = 21, updateOffer = 22, updateChunk = 23, updateDone = 24,
+        // A monitor's correction settings, copied to the other Macs.
+        correctionShare = 25 }
     static func validateFullscreenCommand(_ data: Data) throws {
         guard data.isEmpty else { throw AireError("Orden de pantalla completa inválida.") }
     }

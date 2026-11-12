@@ -379,7 +379,7 @@ final class SenderEngine {
     // Brightness uses the existing authenticated connection, never a public service.
     var onBrightnessPacket: ((Wire.Kind, Data) -> Void)?
     func sendBrightness(_ kind: Wire.Kind, _ data: Data) {
-        guard kind == .brightnessCommand || kind == .brightnessResult, data.count <= 1024 else { return }
+        guard kind == .brightnessCommand || kind == .brightnessResult || kind == .correctionShare, data.count <= 1024 else { return }
         queue.async { [weak self] in
             guard let self = self, self.authenticated else { return }
             self.peer?.send(kind, data)
@@ -665,7 +665,7 @@ final class SenderEngine {
                                 } }
                             }
                             if !self.captureStopping { self.beginCapture(self.requestedOptions ?? options) }
-                        } else if kind == .brightnessCommand || kind == .brightnessResult {
+                        } else if kind == .brightnessCommand || kind == .brightnessResult || kind == .correctionShare {
                             guard self.authenticated, data.count <= 1024 else { throw AireError("Ajuste de brillo no autorizado o inválido.") }
                             self.onBrightnessPacket?(kind, data)
                         } else if kind == .ack, self.authenticated {
@@ -1012,7 +1012,7 @@ final class ReceiverEngine {
     var onBrightnessPacket: ((Wire.Kind, Data) -> Void)?
     var onFullscreenRequest: (() -> Void)?
     func sendBrightness(_ kind: Wire.Kind, _ data: Data) {
-        guard kind == .brightnessCommand || kind == .brightnessResult, data.count <= 1024 else { return }
+        guard kind == .brightnessCommand || kind == .brightnessResult || kind == .correctionShare, data.count <= 1024 else { return }
         queue.async { [weak self] in
             guard let self = self, self.hello else { return }
             self.peer?.send(kind, data)
@@ -1226,7 +1226,7 @@ final class ReceiverEngine {
                         guard !self.hello else { throw AireError("Saludo duplicado.") }
                         guard try acceptHello(data, expected: "sender", updates: updates) else { return }; self.onPeerConnected?(try Wire.peerName(data)); self.hello = true; self.streamActivity.start(); self.sessionApproved = true
                         self.setPhase(.preparing); self.onConnection?(true); self.onStatus?("Conectado al otro Mac. Esperando imagen…")
-                    } else if kind == .brightnessCommand || kind == .brightnessResult {
+                    } else if kind == .brightnessCommand || kind == .brightnessResult || kind == .correctionShare {
                             guard self.hello, data.count <= 1024 else { throw AireError("Ajuste de brillo no autorizado o inválido.") }
                             self.onBrightnessPacket?(kind, data)
                     } else if kind == .fullscreenCommand {

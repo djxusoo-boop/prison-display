@@ -85,6 +85,12 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     #endif
     private var brightnessNodes: [UUID: BrightnessNode] = [:]
     private var brightnessQueryTimer: Timer?
+    private var correctionShareTimer: Timer?, correctionSharePending: Timer?
+    private func shareCorrections() {
+        #if !LEGACY
+        for data in CorrectionStore.shares() { broadcastBrightness(.correctionShare, data, except: nil) }
+        #endif
+    }
     private lazy var brightnessHostName = Host.current().localizedName ?? "Este Mac"
     private var toolPages: [Tool: NSView] = [:]
     let heading = NSTextField(labelWithString: "")
@@ -273,6 +279,16 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         NSApp.mainMenu = menu
         LocalBrightness.reapplySoftware()
         PhysicalDisplays.enforce()
+        // Monitor corrections travel to the other Macs: right after a change,
+        // and every 15 s for Macs that connect later (each keeps the newest).
+        #if !LEGACY
+        NotificationCenter.default.addObserver(forName: CorrectionStore.sharedChange, object: nil, queue: .main) { [weak self] note in
+            guard note.userInfo?["local"] as? Bool == true else { return }
+            self?.correctionSharePending?.invalidate()
+            self?.correctionSharePending = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in self?.shareCorrections() }
+        }
+        correctionShareTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.shareCorrections() }
+        #endif
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             LocalBrightness.reapplySoftware(); if self?.tool == .brightness { self?.refreshBrightnessPage() }
         }
@@ -368,6 +384,16 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     private func receiveBrightness(_ kind: Wire.Kind, _ data: Data, source: Int) {
         // Callbacks from a retired role must not affect the new workspace.
         guard (role == .send && source < 2) || (role == .receive && source == 2) else { return }
+        if kind == .correctionShare {
+            // Newer settings for a monitor: keep them and pass them on.
+            #if LEGACY
+            // This Mac cannot correct monitors; it only passes the copy on.
+            if role == .send { broadcastBrightness(kind, data, except: source) }
+            #else
+            if CorrectionStore.merge(data), role == .send { broadcastBrightness(kind, data, except: source) }
+            #endif
+            return
+        }
         if kind == .brightnessCommand, let command = try? BrightnessCommand(data: data) {
             guard !brightnessSeen.contains(command.id) else { return }
             beginBrightness(command, source: source)

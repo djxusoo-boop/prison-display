@@ -72,10 +72,93 @@ enum CorrectionStore {
     // itself when the monitor is connected or the app opens. Only stopping it
     // by hand (button or ⌃⌥⌘D) clears it.
     static func autoStart(_ display: CGDirectDisplayID) -> Bool { defaults.bool(forKey: key(display) + ".auto") }
-    static func setAutoStart(_ on: Bool, for display: CGDirectDisplayID) { defaults.set(on, forKey: key(display) + ".auto") }
-    static func save(_ settings: CorrectionSettings, for display: CGDirectDisplayID) {
-        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: key(display)) }
+    static func setAutoStart(_ on: Bool, for display: CGDirectDisplayID) {
+        guard autoStart(display) != on || defaults.object(forKey: key(display) + ".auto") == nil else { return }
+        defaults.set(on, forKey: key(display) + ".auto"); touched(key(display))
     }
+    // Screen sizes chosen by the user while the correction runs. When macOS
+    // switches the monitor on by itself it may pick others (1920 × 1080 on a
+    // VGA TV, a smaller built-in screen); these are put back.
+    static func rememberModes(monitor: CGDirectDisplayID) {
+        for (id, key) in [(monitor, key(monitor) + ".mode"), (CGMainDisplayID(), "PrisonDisplay.correction.builtinMode")] where id != 0 {
+            guard let mode = CGDisplayCopyDisplayMode(id) else { continue }
+            let size = [mode.width, mode.height]
+            guard defaults.array(forKey: key) as? [Int] != size else { continue }
+            defaults.set(size, forKey: key)
+            if id == monitor { touched(Self.key(monitor)) }
+        }
+    }
+    static func restoreModes(monitor: CGDirectDisplayID) {
+        let builtin = CGMainDisplayID()
+        for (id, key) in [(monitor, key(monitor) + ".mode"), (builtin, "PrisonDisplay.correction.builtinMode")] where id != 0 {
+            guard let size = defaults.array(forKey: key) as? [Int], size.count == 2 else { continue }
+            CorrectionDisplays.setMode(id, width: size[0], height: size[1])
+        }
+    }
+    static func save(_ settings: CorrectionSettings, for display: CGDirectDisplayID) {
+        guard let data = try? JSONEncoder().encode(settings), defaults.data(forKey: key(display)) != data else { return }
+        defaults.set(data, forKey: key(display)); touched(key(display))
+    }
+
+    // Copies for the other Macs: each monitor's settings travel with the time
+    // they were changed, and the newest wins on every Mac.
+    static let prefix = "PrisonDisplay.correction."
+    static let sharedChange = Notification.Name("PrisonDisplay.correction.changed")
+    private static func touched(_ key: String) {
+        defaults.set(Date().timeIntervalSince1970, forKey: key + ".updated")
+        NotificationCenter.default.post(name: sharedChange, object: nil, userInfo: ["key": key, "local": true])
+    }
+    static func isMonitorKey(_ monitor: String) -> Bool {
+        let parts = monitor.split(separator: "-", omittingEmptySubsequences: false)
+        return parts.count == 3 && parts.allSatisfy { !$0.isEmpty && $0.count <= 8 && $0.allSatisfy { $0.isHexDigit && !$0.isUppercase } }
+    }
+    static func shares() -> [Data] {
+        defaults.dictionaryRepresentation().keys.compactMap { full -> Data? in
+            guard full.hasPrefix(prefix) else { return nil }
+            let monitor = String(full.dropFirst(prefix.count))
+            guard isMonitorKey(monitor), let settings = defaults.data(forKey: full).flatMap({ try? JSONDecoder().decode(CorrectionSettings.self, from: $0) }) else { return nil }
+            let share = CorrectionShare(monitor: monitor, settings: settings, auto: defaults.bool(forKey: full + ".auto"),
+                                        mode: defaults.array(forKey: full + ".mode") as? [Int], updated: defaults.double(forKey: full + ".updated"))
+            return share.data
+        }
+    }
+    // Keeps a copy from another Mac when it is newer. True when it was kept.
+    @discardableResult static func merge(_ data: Data) -> Bool {
+        guard let share = try? CorrectionShare(data: data) else { return false }
+        let full = prefix + share.monitor
+        guard share.updated > defaults.double(forKey: full + ".updated"), let encoded = try? JSONEncoder().encode(share.settings) else { return false }
+        defaults.set(encoded, forKey: full)
+        defaults.set(share.auto, forKey: full + ".auto")
+        if let mode = share.mode { defaults.set(mode, forKey: full + ".mode") }
+        defaults.set(share.updated, forKey: full + ".updated")
+        NotificationCenter.default.post(name: sharedChange, object: nil, userInfo: ["key": full, "local": false])
+        return true
+    }
+}
+
+struct CorrectionShare: Codable {
+    let monitor: String
+    let settings: CorrectionSettings
+    let auto: Bool
+    let mode: [Int]?
+    let updated: Double
+    init(monitor: String, settings: CorrectionSettings, auto: Bool, mode: [Int]?, updated: Double) {
+        self.monitor = monitor; self.settings = settings; self.auto = auto; self.mode = mode; self.updated = updated
+    }
+    init(data: Data) throws {
+        guard data.count <= 1024 else { throw AireError("Ajustes de monitor demasiado grandes.") }
+        let share = try JSONDecoder().decode(Self.self, from: data)
+        guard CorrectionStore.isMonitorKey(share.monitor), share.updated.isFinite, share.updated > 0,
+              share.mode.map({ $0.count == 2 && $0.allSatisfy { (320...8192).contains($0) } }) ?? true,
+              CorrectionSettings.desktopSizes.contains(where: { $0.0 == share.settings.desktopWidth && $0.1 == share.settings.desktopHeight }) else { throw AireError("Ajustes de monitor inválidos.") }
+        let s = share.settings
+        guard (0.2...3).contains(s.scale), abs(s.offsetX) <= 4096, abs(s.offsetY) <= 4096,
+              [s.left, s.right, s.top, s.bottom].allSatisfy({ (0...4096).contains($0) }),
+              s.width.map({ CorrectionSettings.widthRange.contains($0) }) ?? true,
+              s.screenAspect.map({ (1...2.5).contains($0) }) ?? true else { throw AireError("Ajustes de monitor inválidos.") }
+        self = share
+    }
+    var data: Data { (try? JSONEncoder().encode(self)) ?? Data() }
 }
 
 enum CorrectionDisplays {
@@ -85,6 +168,35 @@ enum CorrectionDisplays {
         var ids = [CGDirectDisplayID](repeating: 0, count: 32); var count: UInt32 = 0
         guard display != 0, CGGetOnlineDisplayList(32, &ids, &count) == .success else { return false }
         return ids.prefix(Int(count)).contains(display)
+    }
+    // Monitors plugged in that macOS keeps switched off. Some TVs stay like
+    // that until another screen exists; a virtual display wakes them.
+    static func sleeping() -> [CGDirectDisplayID] {
+        typealias List = @convention(c) (UInt32, UnsafeMutablePointer<CGDirectDisplayID>, UnsafeMutablePointer<UInt32>) -> CGError
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSGetDisplayList") else { return [] }
+        let list = unsafeBitCast(symbol, to: List.self)
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32); var count: UInt32 = 0
+        guard list(32, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count)).filter { !isOnline($0) && CGDisplayVendorNumber($0) != 0xA1DE && CGDisplayVendorNumber($0) != 0 && CGDisplayIsBuiltin($0) == 0 }
+    }
+    static func unmirror(_ displays: [CGDirectDisplayID]) {
+        let mirrored = displays.filter { $0 != 0 && CGDisplayMirrorsDisplay($0) != kCGNullDirectDisplay }
+        guard !mirrored.isEmpty else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        for id in mirrored { CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay) }
+        CGCompleteDisplayConfiguration(config, .forSession)
+    }
+    static func setMode(_ id: CGDirectDisplayID, width: Int, height: Int) {
+        if let current = CGDisplayCopyDisplayMode(id), current.width == width, current.height == height { return }
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let modes = ((CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []).filter { $0.width == width && $0.height == height && $0.isUsableForDesktopGUI() }
+        // Sharpest first (Retina), then 60 Hz when offered.
+        guard let mode = modes.max(by: { ($0.pixelWidth, Int($0.refreshRate) == 60 ? 1 : 0) < ($1.pixelWidth, Int($1.refreshRate) == 60 ? 1 : 0) }) else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
+        CGCompleteDisplayConfiguration(config, .forSession)
     }
     // External physical monitors that can be corrected.
     static func candidates() -> [CGDirectDisplayID] {
@@ -169,8 +281,15 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // Main thread. Returns an error message, or nil once the image is on the monitor.
     private(set) var restarting = false
-    func start(display: CGDirectDisplayID, settings: CorrectionSettings, origin knownOrigin: CGPoint? = nil) -> String? {
-        guard virtual == nil else { return "La corrección ya está activa." }
+    // `prepared`: a corrected desktop already created (to wake the monitor);
+    // it is used instead of a new one, or destroyed if the start fails.
+    func start(display: CGDirectDisplayID, settings: CorrectionSettings, origin knownOrigin: CGPoint? = nil, prepared: ADVirtualScreen? = nil) -> String? {
+        guard virtual == nil else { prepared?.destroy(); return "La corrección ya está activa." }
+        if let prepared = prepared, let error = start(display: display, settings: settings, origin: knownOrigin, screen: prepared) { prepared.destroy(); return error }
+        if prepared != nil { return nil }
+        return start(display: display, settings: settings, origin: knownOrigin, screen: nil)
+    }
+    private func start(display: CGDirectDisplayID, settings: CorrectionSettings, origin knownOrigin: CGPoint?, screen prepared: ADVirtualScreen?) -> String? {
         guard CorrectionDisplays.isOnline(display), CGDisplayIsBuiltin(display) == 0, display != CGMainDisplayID(), CGDisplayMirrorsDisplay(display) == kCGNullDirectDisplay else {
             return "El monitor debe estar conectado como pantalla ampliada (no duplicada) y no puede ser la principal."
         }
@@ -180,14 +299,14 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         self.settings = settings; physical = display
         note = CorrectionDisplays.preferSixtyHertz(display)
         let origin = knownOrigin ?? CGDisplayBounds(display).origin
-        let screen = ADVirtualScreen(); screen.screenSlot = 3
+        let screen = prepared ?? ADVirtualScreen(); screen.screenSlot = 3
         var message: NSString?
-        guard screen.createWidth(UInt(settings.desktopWidth), height: UInt(settings.desktopHeight), error: &message) else {
+        guard prepared != nil || screen.createWidth(UInt(settings.desktopWidth), height: UInt(settings.desktopHeight), error: &message) else {
             return message as String? ?? "No se pudo crear el escritorio virtual."
         }
         let id = screen.displayID
         guard Self.wait(seconds: 4, until: { CorrectionDisplays.isOnline(id) && Int(CGDisplayPixelsWide(id)) == settings.desktopWidth }) else {
-            screen.destroy()
+            if prepared == nil { screen.destroy() }
             return "macOS no encendió el escritorio virtual. Este Mac admite dos pantallas externas y el monitor ya cuenta como una: detén las pantallas enviadas a otros Mac y vuelve a intentarlo."
         }
         virtual = screen; virtualID = id; physicalOrigin = origin
@@ -495,8 +614,22 @@ final class CorrectionPage: NSObject {
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if !CommandLine.arguments.contains("--layout-preview") && !CommandLine.arguments.contains("--correction-self-test") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.autoStartIfNeeded() }
+            // A TV left switched off by macOS sends no notice: look every 3 s.
+            let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.wakeSleepingIfNeeded() }
+            RunLoop.main.add(timer, forMode: .common)
         }
         engine.onRestarted = { [weak self] in self?.refresh("Tamaño del escritorio cambiado.") }
+        NotificationCenter.default.addObserver(forName: CorrectionStore.sharedChange, object: nil, queue: .main) { [weak self] note in
+            guard let self = self, note.userInfo?["local"] as? Bool == false, let key = note.userInfo?["key"] as? String else { return }
+            // Settings changed on another Mac for this same monitor.
+            if self.engine.active, CorrectionStore.key(self.engine.physical) == key {
+                let next = CorrectionStore.load(self.engine.physical); self.settings = next; self.engine.update(next)
+                self.showSettings(); self.refresh("Ajustes recibidos de otro Mac.")
+            } else if let id = self.selected, CorrectionStore.key(id) == key {
+                self.settings = CorrectionStore.load(id); self.showSettings(); self.refresh("Ajustes recibidos de otro Mac.")
+            }
+            self.autoStartIfNeeded()
+        }
         reload()
     }
 
@@ -526,7 +659,7 @@ final class CorrectionPage: NSObject {
         guard let id = selected ?? CorrectionDisplays.candidates().first else { return "Conecta el monitor como pantalla ampliada." }
         let saved = CorrectionStore.load(id)
         if let error = engine.start(display: id, settings: saved) { return error }
-        CorrectionStore.setAutoStart(true, for: id); settings = saved; reload()
+        CorrectionStore.setAutoStart(true, for: id); CorrectionStore.rememberModes(monitor: id); settings = saved; reload()
         return nil
     }
     private var autoPending: DispatchWorkItem?
@@ -537,11 +670,50 @@ final class CorrectionPage: NSObject {
         autoPending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
     func autoStartIfNeeded() {
-        guard !engine.active, !engine.restarting else { return }
+        guard !engine.active, !engine.restarting, !waking else { return }
         guard let id = CorrectionDisplays.candidates().first(where: { CorrectionStore.autoStart($0) }) else { return }
         let saved = CorrectionStore.load(id)
+        CorrectionStore.restoreModes(monitor: id)
         if let error = engine.start(display: id, settings: saved) { reload(); refresh("No se pudo reanudar la corrección: \(error)"); return }
         settings = saved; reload(); refresh("Corrección reanudada con tus ajustes guardados.")
+        restoreModesSoon(id)
+    }
+    // A monitor with the correction left on that macOS keeps dark (the TV with
+    // «Preguntar qué mostrar»): create the corrected desktop first, which makes
+    // macOS switch the monitor on, then start the correction on it.
+    private var waking = false
+    private var wakeFailed: [CGDirectDisplayID: Date] = [:]
+    func wakeSleepingIfNeeded() {
+        guard !engine.active, !engine.restarting, !waking, ScreenCaptureAccess.permitted() else { return }
+        guard let id = CorrectionDisplays.sleeping().first(where: { CorrectionStore.autoStart($0) && Date().timeIntervalSince(wakeFailed[$0] ?? .distantPast) > 60 }) else { return }
+        let saved = CorrectionStore.load(id)
+        let screen = ADVirtualScreen(); screen.screenSlot = 3
+        var message: NSString?
+        guard screen.createWidth(UInt(saved.desktopWidth), height: UInt(saved.desktopHeight), error: &message) else { wakeFailed[id] = Date(); return }
+        waking = true; refresh("Encendiendo el monitor…")
+        CorrectionEngine.waitAsync(seconds: 8, until: { CorrectionDisplays.isOnline(id) }) { [weak self] up in
+            guard let self = self, up else { self?.waking = false; self?.wakeFailed[id] = Date(); screen.destroy(); return }
+            CorrectionDisplays.unmirror([id, screen.displayID])
+            CorrectionStore.restoreModes(monitor: id)
+            CorrectionEngine.waitAsync(seconds: 4, until: { CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay && CGDisplayMirrorsDisplay(screen.displayID) == kCGNullDirectDisplay }) { [weak self] _ in
+                guard let self = self else { screen.destroy(); return }
+                self.waking = false
+                if let error = self.engine.start(display: id, settings: saved, prepared: screen) {
+                    self.wakeFailed[id] = Date(); self.reload(); self.refresh("No se pudo encender el monitor: \(error)"); return
+                }
+                self.settings = saved; self.reload(); self.refresh("Monitor encendido y corrección puesta con tus ajustes guardados.")
+                self.restoreModesSoon(id)
+            }
+        }
+    }
+    // macOS may change the screens again once the corrected desktop appears.
+    private func restoreModesSoon(_ id: CGDirectDisplayID) {
+        for delay in [1.5, 4.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, self.engine.active, self.engine.physical == id else { return }
+                CorrectionStore.restoreModes(monitor: id)
+            }
+        }
     }
     @objc private func chooseAspect() {
         settings.screenAspect = CorrectionSettings.screenAspects[max(0, aspectPopup.indexOfSelectedItem)].1; changed()
@@ -553,7 +725,7 @@ final class CorrectionPage: NSObject {
         startButton.isEnabled = false; statusLabel.stringValue = "Preparando el escritorio corregido…"
         DispatchQueue.main.async {
             let error = self.engine.start(display: id, settings: self.settings)
-            if error == nil { CorrectionStore.setAutoStart(true, for: id) }
+            if error == nil { CorrectionStore.setAutoStart(true, for: id); CorrectionStore.rememberModes(monitor: id) }
             self.startButton.isEnabled = true
             self.refresh(error)
         }
@@ -577,7 +749,7 @@ final class CorrectionPage: NSObject {
         changed()
     }
     private func changed() {
-        if let id = selected { CorrectionStore.save(settings, for: id) }
+        if let id = selected { CorrectionStore.save(settings, for: id); if engine.active, engine.physical == id { CorrectionStore.rememberModes(monitor: id) } }
         if engine.active, !engine.restarting { engine.update(settings) }
         refresh(nil)
     }
