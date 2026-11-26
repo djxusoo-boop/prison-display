@@ -2,6 +2,7 @@
 
 - Arreglo (iMac, macOS 12): la tele se quedaba en negro y parpadeaba. En ese macOS la captura moderna (ScreenCaptureKit) arranca sin error pero no entrega ninguna imagen; ahora el iMac usa la captura clásica (CGDisplayStream), comprobada en el propio iMac. En cualquier otro Mac, si la captura moderna no da nada en 3 segundos, se cambia sola a la clásica.
 - macOS 12 devolvía las pantallas a su sitio un segundo después de colocar el escritorio corregido (la tele quedaba delante y el lienzo en el sitio equivocado). La app lo detecta y vuelve a colocarlas.
+- Arreglo (iMac): al abrir la app, la corrección no llegaba a ver encendido el escritorio virtual (macOS no podía avisar a la app mientras esperaba) y se rendía; ahora arranca desde un temporizador y lo ve al momento.
 - Si la corrección se detiene sola tres veces en dos minutos, deja de arrancar sola hasta que pulses Empezar: se acabó el parpadeo en bucle.
 
 ## 0.4.37 · Monitor HDMI y Corregir monitor sin pisarse
