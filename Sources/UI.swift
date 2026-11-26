@@ -1650,12 +1650,27 @@ enum AppUpdater {
               SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate), requirement) == errSecSuccess
         else { throw AireError("La actualización no está firmada por PRISON DISPLAY. No se instala.") }
         // Swap in place; the previous copy stays hidden beside it for recovery.
-        let previous = current.deletingLastPathComponent().appendingPathComponent(".\(current.lastPathComponent).anterior")
-        try? fm.removeItem(at: previous)
-        try fm.moveItem(at: current, to: previous)
-        do { try fm.moveItem(at: app, to: current) }
-        catch { try? fm.moveItem(at: previous, to: current); throw AireError("No se pudo sustituir la app: \(error.localizedDescription)") }
-        return current
+        func swap(into target: URL) throws {
+            let previous = target.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).anterior")
+            try? fm.removeItem(at: previous)
+            guard fm.fileExists(atPath: target.path) else { try fm.moveItem(at: app, to: target); return }
+            try fm.moveItem(at: target, to: previous)
+            do { try fm.moveItem(at: app, to: target) }
+            catch { try? fm.moveItem(at: previous, to: target); throw error }
+        }
+        if fm.isWritableFile(atPath: current.deletingLastPathComponent().path), (try? swap(into: current)) != nil { return current }
+        // Applications installed by an administrator cannot be changed by this
+        // user: the update goes to the user's own Applications folder, which is
+        // always writable, and runs from there (the next launch offers to remove
+        // the old copy and points «open at login» at this one).
+        let personal = fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        let target = personal.appendingPathComponent(current.lastPathComponent)
+        guard target.standardizedFileURL != current.standardizedFileURL else { throw AireError("No se pudo sustituir la app en \(personal.path).") }
+        do {
+            try fm.createDirectory(at: personal, withIntermediateDirectories: true)
+            try swap(into: target)
+        } catch { throw AireError("No se pudo instalar la actualización ni en Aplicaciones ni en \(personal.path): \(error.localizedDescription)") }
+        return target
     }
     static func relaunch(_ app: URL) {
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")

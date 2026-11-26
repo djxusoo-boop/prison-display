@@ -1,3 +1,7 @@
+## 0.4.36 · Actualizaciones sin permiso de administrador
+
+- Arreglo (iMac): la actualización automática fallaba con «couldn't be moved because you don't have permission to access Applications» cuando la app de Aplicaciones la había instalado un administrador. Ahora, si no puede sustituirse ahí, se instala en la carpeta Aplicaciones del propio usuario (que siempre puede escribir) y se abre desde allí; las siguientes actualizaciones ya se hacen en ese sitio.
+
 ## 0.4.35 · Corregir monitor en el iMac
 
 - Corregir monitor llega a los Mac Intel con macOS 12.3 o posterior (el iMac): escritorio virtual de la resolución que elijas, dibujado en el monitor (por ejemplo el de Thunderbolt) con escala, anchura, desplazamiento y márgenes. Antes la versión Intel lo dejaba fuera entero. El MacBook Pro con 10.13 sigue abriendo la app: la captura de pantalla se enlaza solo si existe.
