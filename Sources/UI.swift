@@ -3061,8 +3061,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Apple silicon shows it in hardware (smooth pointer). Intel Macs only
         // in software: it works, but the pointer may be less smooth.
         let hardware = waitForHardwareMirror(target, of: screen.displayID, timeout: 1.5)
-        localVirtual = screen; localPhysicalDisplay = target; localPhysicalOrigin = origin
-        Self.rememberMonitorMode(target, monitorMode)
         // The bigger desktop takes the monitor's place, so the pointer still
         // leaves the Mac's screen by the same edge.
         let spot = Self.anchoredOrigin(monitor: monitorRect, main: CGDisplayBounds(CGMainDisplayID()), size: CGSize(width: profile.width, height: profile.height))
@@ -3071,6 +3069,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             CGConfigureDisplayOrigin(place, screen.displayID, Int32(spot.x.rounded()), Int32(spot.y.rounded()))
             CGCompleteDisplayConfiguration(place, .forSession)
         }
+        // macOS may accept the mirror and drop it a moment later (seen on an
+        // Intel iMac): the bigger desktop would stay as an invisible extra
+        // screen. Check that it holds; ask once more, else undo and say so.
+        func holds() -> Bool {
+            let until = Date().addingTimeInterval(2)
+            while Date() < until {
+                if CGDisplayMirrorsDisplay(target) != screen.displayID { return false }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+            return CGDisplayMirrorsDisplay(target) == screen.displayID
+        }
+        if !holds() {
+            guard configureLocalMonitor(target, mirrorOf: screen.displayID), waitForMirror(target, of: screen.displayID), holds() else {
+                undo("macOS no deja mostrar en este monitor el escritorio de \(profile.width) × \(profile.height): lo acepta y lo deshace enseguida. El monitor queda como estaba. Para elegir la resolución y ajustar márgenes usa Corregir monitor, que no depende de esto."); return
+            }
+        }
+        localVirtual = screen; localPhysicalDisplay = target; localPhysicalOrigin = origin
+        Self.rememberMonitorMode(target, monitorMode)
         let name = localDisplay.titleOfSelectedItem ?? "monitor externo"
         refreshLocalDisplays()
         localStatus.stringValue = "Activo · \(profile.width) × \(profile.height) virtuales en \(name). Para volver a la normalidad, Detener."

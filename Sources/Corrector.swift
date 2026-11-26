@@ -143,8 +143,11 @@ enum CorrectionStore {
             guard full.hasPrefix(prefix) else { return nil }
             let monitor = String(full.dropFirst(prefix.count))
             guard isMonitorKey(monitor), let settings = defaults.data(forKey: full).flatMap({ try? JSONDecoder().decode(CorrectionSettings.self, from: $0) }) else { return nil }
+            // The monitor's output size depends on the cable of each Mac (VGA on
+            // the Air: 1280 × 1024; Thunderbolt on the iMac: 1920 × 1080): it
+            // stays on each Mac and is not sent.
             let share = CorrectionShare(monitor: monitor, settings: settings, auto: defaults.bool(forKey: full + ".auto"),
-                                        mode: defaults.array(forKey: full + ".mode") as? [Int], updated: defaults.double(forKey: full + ".updated"))
+                                        mode: nil, updated: defaults.double(forKey: full + ".updated"))
             return share.data
         }
     }
@@ -155,7 +158,7 @@ enum CorrectionStore {
         guard share.updated > defaults.double(forKey: full + ".updated"), let encoded = try? JSONEncoder().encode(share.settings) else { return false }
         defaults.set(encoded, forKey: full)
         defaults.set(share.auto, forKey: full + ".auto")
-        if let mode = share.mode { defaults.set(mode, forKey: full + ".mode") }
+        // Older versions also send the output size: this Mac keeps its own.
         defaults.set(share.updated, forKey: full + ".updated")
         NotificationCenter.default.post(name: sharedChange, object: nil, userInfo: ["key": full, "local": false])
         return true
@@ -650,6 +653,8 @@ final class CorrectionPage: NSObject {
     private var sliders: [String: (NSSlider, NSTextField)] = [:]
     private var monitors: [CGDirectDisplayID] = []
     private var settings = CorrectionSettings()
+    // Why a monitor cannot be corrected now (Monitor HDMI is using it), or nil.
+    var monitorBusy: (CGDirectDisplayID) -> String? = { _ in nil }
 
     override init() {
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
@@ -748,6 +753,7 @@ final class CorrectionPage: NSObject {
         guard let id = selected ?? CorrectionDisplays.candidates().first else {
             return PhysicalDisplays.off.isEmpty ? "Conecta el monitor como pantalla ampliada." : "Primero activa el monitor en esta lista."
         }
+        if let busy = monitorBusy(id) { return busy }
         guard ScreenCaptureAccess.permitted() else { CorrectionEngine.askForPermission(); return CorrectionEngine.permissionMissing }
         ModeKeeper.noteBuiltinIfMissing()
         let saved = CorrectionStore.load(id)
@@ -772,7 +778,7 @@ final class CorrectionPage: NSObject {
     }
     func autoStartIfNeeded() {
         guard !engine.active, !engine.restarting, !waking else { return }
-        guard let id = CorrectionDisplays.candidates().first(where: { CorrectionStore.autoStart($0) }) else { return }
+        guard let id = CorrectionDisplays.candidates().first(where: { CorrectionStore.autoStart($0) && monitorBusy($0) == nil }) else { return }
         let saved = CorrectionStore.load(id)
         CorrectionStore.restoreModes(monitor: id)
         if let error = engine.start(display: id, settings: saved) { reload(); refresh("No se pudo reanudar la corrección: \(error)"); return }
@@ -823,6 +829,7 @@ final class CorrectionPage: NSObject {
         guard !engine.restarting else { return }
         if engine.active { engine.stopByUser(); return }
         guard let id = selected else { refresh("Conecta el monitor como pantalla ampliada."); return }
+        if let busy = monitorBusy(id) { refresh(busy); return }
         guard ScreenCaptureAccess.permitted() else { CorrectionEngine.askForPermission(); refresh(CorrectionEngine.permissionMissing); return }
         ModeKeeper.noteBuiltinIfMissing()
         startButton.isEnabled = false; statusLabel.stringValue = "Preparando el escritorio corregido…"

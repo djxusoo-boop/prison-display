@@ -62,7 +62,9 @@ var tv = CorrectionSettings(); tv.desktopWidth = 1280; tv.desktopHeight = 720; t
 let shared = CorrectionShare(monitor: "34a9-a027-636", settings: tv, auto: true, mode: [1280, 1024], updated: 1000)
 check(CorrectionStore.merge(shared.data), "guarda la copia de otro Mac")
 check(CorrectionStore.defaults.bool(forKey: "PrisonDisplay.correction.34a9-a027-636.auto"), "la copia trae el arranque automático")
-check(CorrectionStore.defaults.array(forKey: "PrisonDisplay.correction.34a9-a027-636.mode") as? [Int] == [1280, 1024], "la copia trae la resolución del monitor")
+check(CorrectionStore.defaults.array(forKey: "PrisonDisplay.correction.34a9-a027-636.mode") == nil, "la resolución de salida no viaja: depende del cable de cada Mac")
+CorrectionStore.defaults.set([1920, 1080], forKey: "PrisonDisplay.correction.34a9-a027-636.mode")
+check(CorrectionStore.shares().compactMap { try? CorrectionShare(data: $0) }.allSatisfy { $0.mode == nil }, "al compartir no se envía la resolución de salida")
 let saved = CorrectionStore.defaults.data(forKey: "PrisonDisplay.correction.34a9-a027-636").flatMap { try? JSONDecoder().decode(CorrectionSettings.self, from: $0) }
 check(saved == tv, "los ajustes llegan iguales")
 var older = tv; older.width = 70

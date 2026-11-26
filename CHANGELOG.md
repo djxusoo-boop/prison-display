@@ -1,3 +1,9 @@
+## 0.4.37 · Monitor HDMI y Corregir monitor sin pisarse
+
+- Monitor HDMI (iMac): macOS aceptaba duplicar el monitor sobre el escritorio grande y lo deshacía al momento, dejando una pantalla invisible al lado («parpadean las dos pantallas y no cambia nada»). Ahora la app comprueba que la duplicación se mantiene, lo intenta otra vez y, si no, lo deshace todo y lo explica.
+- Corregir monitor no arranca sobre un monitor que está usando Monitor HDMI (ni a mano ni solo); lo dice.
+- La resolución de salida de un monitor ya no se comparte entre Macs: depende del cable de cada uno (VGA en el MacBook Air, Thunderbolt en el iMac). Forma, escala, anchura y márgenes sí se siguen compartiendo.
+
 ## 0.4.36 · Actualizaciones sin permiso de administrador
 
 - Arreglo (iMac): la actualización automática fallaba con «couldn't be moved because you don't have permission to access Applications» cuando la app de Aplicaciones la había instalado un administrador. Ahora, si no puede sustituirse ahí, se instala en la carpeta Aplicaciones del propio usuario (que siempre puede escribir) y se abre desde allí; las siguientes actualizaciones ya se hacen en ese sitio.

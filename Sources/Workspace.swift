@@ -264,6 +264,10 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
                 if page.engine.active, id == page.engine.virtualID { page.engine.moveDesktop(to: origin) } else { DeviceMapView.applyOrigin(id, origin) }
             }
             // "Monitor HDMI" and the correction cannot share a monitor.
+            page.monitorBusy = { [weak self] id in
+                guard let sender = self?.sender, sender.localVirtualActive, sender.localPhysicalID == id else { return nil }
+                return "Este monitor lo está usando Monitor HDMI. Pulsa Detener allí y vuelve a intentarlo."
+            }
             sender.localBusy = { id in
                 page.engine.active && page.engine.physical == id ? "Este monitor lo está usando Corregir monitor. Para darle aquí más espacio, detén antes la corrección." : nil
             }

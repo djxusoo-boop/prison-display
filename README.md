@@ -1,7 +1,7 @@
 # PRISON DISPLAY
 
 Ecosistema de pantallas, ratón, teclado y portapapeles entre Macs y un PC con Windows,
-por Wi‑Fi o cable de red. Versión Mac **0.4.36** · Windows **0.3.0** (protocolo revisión 12).
+por Wi‑Fi o cable de red. Versión Mac **0.4.37** · Windows **0.3.0** (protocolo revisión 12).
 
 ## Qué hace
 - **Pantallas extendidas:** el MacBook Air envía hasta dos escritorios virtuales al MacBook Pro y al iMac.
