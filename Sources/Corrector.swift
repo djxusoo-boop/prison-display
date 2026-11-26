@@ -287,6 +287,19 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     private var window: NSWindow?
     private let imageLayer = CALayer()
     private var stream: SCStream?
+    // CGDisplayStream: on the iMac (Intel, macOS 12) ScreenCaptureKit starts
+    // without error but never delivers an image; the old capture does.
+    private var legacy: ADLegacyCapture?
+    private var shownPixel: CVPixelBuffer?
+    private var fallback: DispatchWorkItem?
+    static var prefersLegacyCapture: Bool {
+        #if LEGACY
+        if #available(macOS 13.0, *) { return false }
+        return true
+        #else
+        return false
+        #endif
+    }
     private let queue = DispatchQueue(label: "PrisonDisplay.corrector", qos: .userInteractive)
     private var guardTimer: Timer?
     private var physicalOrigin: CGPoint?
@@ -329,13 +342,15 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
             return message as String? ?? "No se pudo crear el escritorio virtual."
         }
         let id = screen.displayID
-        guard Self.wait(seconds: 4, until: { CorrectionDisplays.isOnline(id) && Int(CGDisplayPixelsWide(id)) == settings.desktopWidth }) else {
+        guard Self.wait(seconds: 10, until: { CorrectionDisplays.isOnline(id) && Int(CGDisplayPixelsWide(id)) == settings.desktopWidth }) else {
+            NSLog("PRISON corrección: virtual %u en línea %d ancho %d (pedido %d) modo %@", id, CorrectionDisplays.isOnline(id) ? 1 : 0, Int(CGDisplayPixelsWide(id)), settings.desktopWidth, "\(CGDisplayBounds(id))")
             if prepared == nil { screen.destroy() }
             return "macOS no encendió el escritorio virtual. Este Mac admite dos pantallas externas y el monitor ya cuenta como una: detén las pantallas enviadas a otros Mac y vuelve a intentarlo."
         }
         virtual = screen; virtualID = id; physicalOrigin = origin
         arrange()
         showWindow()
+        checkArrangementSoon()
         installHotKey()
         guardTimer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.keepPointerOut() }
         RunLoop.main.add(guardTimer!, forMode: .common)
@@ -355,12 +370,12 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
             let display = physical, origin = physicalOrigin, old = virtualID
             restarting = true
             stop(reason: nil, restoreOrigin: false)
-            Self.waitAsync(seconds: 15, until: { !CorrectionDisplays.isOnline(old) }) { [weak self] _ in
+            Self.waitAsync(seconds: 15, until: { !CorrectionDisplays.isOnline(old) }) { _ in Self.onRunLoop { [weak self] in
                 guard let self = self else { return }
                 self.restarting = false
                 if let error = self.start(display: display, settings: next, origin: origin) { self.onStopped?(error) }
                 else { self.onRestarted?() }
-            }
+            } }
             return
         }
         applyLayout()
@@ -371,7 +386,7 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     func moveDesktop(to origin: CGPoint) {
         guard active else { return }
         physicalOrigin = CGPoint(x: origin.x.rounded(), y: origin.y.rounded())
-        arrange(); reassertWindow()
+        arrange(); reassertWindow(); checkArrangementSoon()
     }
 
     // Main thread. Restores the monitor as an ordinary extended display.
@@ -382,9 +397,11 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         guardTimer?.invalidate(); guardTimer = nil
         removeHotKey()
         if let stream = stream { self.stream = nil; stream.stopCapture { _ in } }
+        stopLegacy()
+        fallback?.cancel(); fallback = nil
         resize?.cancel(); resize = nil
         window?.orderOut(nil); window = nil
-        imageLayer.contents = nil
+        imageLayer.contents = nil; shownPixel = nil
         virtual = nil
         let id = virtualID; virtualID = 0
         screen.destroy()
@@ -401,7 +418,7 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         if waitNow { _ = Self.wait(seconds: 3) { !CorrectionDisplays.isOnline(id) }; putBack() }
         else { Self.waitAsync(seconds: 15, until: { !CorrectionDisplays.isOnline(id) }) { _ in putBack() } }
-        physicalOrigin = nil; framesShown = 0
+        physicalOrigin = nil; framesShown = 0; rearranged = []
         if let reason = reason { onStopped?(reason) }
     }
 
@@ -539,8 +556,54 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         if #available(macOS 14.0, *) { config.preservesAspectRatio = false }
         return config
     }
+    private func legacySize(_ drawn: CGSize) -> CGSize {
+        // CGDisplayStream keeps the desktop's shape: ask for it at the drawn height.
+        let width = (drawn.height * CGFloat(settings.desktopWidth) / CGFloat(max(1, settings.desktopHeight))).rounded()
+        return CGSize(width: max(2, Int(width) & ~1), height: max(2, Int(drawn.height) & ~1))
+    }
+    private func stopLegacy() {
+        guard let capture = legacy else { return }
+        legacy = nil; capture.onPixel = nil; capture.onError = nil
+        capture.stop(completion: {})
+    }
+    private func startLegacyCapture(size: CGSize) {
+        stopLegacy()
+        let id = virtualID, capture = ADLegacyCapture(), pixels = legacySize(size)
+        capture.onPixel = { [weak self] pixel in self?.deliver(pixel: pixel) }
+        capture.onError = { [weak self] message in DispatchQueue.main.async { if self?.virtualID == id { self?.stop(reason: message) } } }
+        if let error = capture.startDisplay(id, width: UInt(pixels.width), height: UInt(pixels.height), fps: 60, cursor: true, queue: queue) {
+            stop(reason: "No se pudo capturar el escritorio virtual: \(error)"); return
+        }
+        legacy = capture; captureSize = size
+    }
+    // Called on the capture queue with a pixel buffer the capture no longer uses.
+    private func deliver(pixel: CVPixelBuffer) {
+        lock.lock(); pendingPixel = pixel; let schedule = !scheduledPixel; scheduledPixel = true; lock.unlock()
+        guard schedule else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock(); let next = self.pendingPixel; self.pendingPixel = nil; self.scheduledPixel = false; self.lock.unlock()
+            guard self.window != nil, let next = next, let surface = CVPixelBufferGetIOSurface(next)?.takeUnretainedValue() else { return }
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            self.imageLayer.contents = surface
+            CATransaction.commit()
+            self.shownPixel = next // kept until replaced, so the pool does not reuse it on screen
+            self.framesShown += 1
+        }
+    }
+    private var pendingPixel: CVPixelBuffer?
+    private var scheduledPixel = false
     private func startCapture() {
         let id = virtualID, size = imageRect.size
+        if Self.prefersLegacyCapture { startLegacyCapture(size: size); return }
+        // Anywhere else: if ScreenCaptureKit gives nothing at all, use the old capture.
+        let check = DispatchWorkItem { [weak self] in
+            guard let self = self, self.virtualID == id, self.framesShown == 0 else { return }
+            if let stream = self.stream { self.stream = nil; stream.stopCapture { _ in } }
+            self.startLegacyCapture(size: self.imageRect.size)
+        }
+        fallback?.cancel(); fallback = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: check)
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [weak self] content, error in
             DispatchQueue.main.async {
                 guard let self = self, self.virtualID == id else { return }
@@ -559,6 +622,7 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
     private func resizeCapture(to size: CGSize) {
+        if legacy != nil { if size != captureSize { startLegacyCapture(size: size) }; return }
         guard let stream = stream, size != captureSize else { return }
         captureSize = size
         stream.updateConfiguration(configuration(size: size)) { _ in }
@@ -598,7 +662,30 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         guard virtual != nil else { return }
         if !CorrectionDisplays.isOnline(physical) { stop(reason: "El monitor se ha desconectado; corrección detenida."); return }
         if !CorrectionDisplays.isOnline(virtualID) { stop(reason: "macOS retiró el escritorio virtual; corrección detenida."); return }
+        keepArrangement()
         reassertWindow()
+    }
+    // macOS 12 puts the displays back where it remembers them about a second
+    // after the arrangement: put it right again (a few times, never in a loop).
+    private var rearranged: [Date] = []
+    private func keepArrangement() {
+        guard let origin = physicalOrigin, virtual != nil else { return }
+        let desktop = CGDisplayBounds(virtualID), monitor = CGDisplayBounds(physical)
+        // What matters is the monitor right after the desktop (macOS may shift both).
+        _ = origin
+        guard monitor.minX != desktop.maxX || monitor.minY != desktop.minY else { return }
+        rearranged = rearranged.filter { $0.timeIntervalSinceNow > -20 }
+        guard rearranged.count < 6 else { return }
+        rearranged.append(Date())
+        arrange()
+    }
+    private func checkArrangementSoon() {
+        for delay in [1.0, 2.0, 4.0] {
+            Self.onRunLoop(after: delay) { [weak self] in
+                guard let self = self, self.virtual != nil else { return }
+                self.keepArrangement(); self.reassertWindow()
+            }
+        }
     }
 
     // ⌃⌥⌘D stops the correction from anywhere (no permission needed).
@@ -626,6 +713,14 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll)
         }
         poll()
+    }
+    // Runs `block` from a run-loop timer on the main thread, never inside a
+    // block of the main dispatch queue: while such a block runs, macOS cannot
+    // deliver display changes to this app (they come through that same queue),
+    // so `wait` would never see the new desktop appear (the iMac on macOS 12).
+    static func onRunLoop(after delay: Double = 0, _ block: @escaping () -> Void) {
+        let timer = Timer(timeInterval: delay, repeats: false) { _ in block() }
+        RunLoop.main.add(timer, forMode: .common)
     }
     static func wait(seconds: Double, until condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
@@ -707,14 +802,16 @@ final class CorrectionPage: NSObject {
         // Start again by itself when the monitor comes back or the app opens.
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if !CommandLine.arguments.contains("--layout-preview") && !CommandLine.arguments.contains("--correction-self-test") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.autoStartIfNeeded() }
+            CorrectionEngine.onRunLoop(after: 2) { [weak self] in self?.autoStartIfNeeded() }
             // A TV left switched off by macOS sends no notice: look every 3 s.
             let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.wakeSleepingIfNeeded() }
             RunLoop.main.add(timer, forMode: .common)
         }
         engine.onRestarted = { [weak self] in self?.refresh("Tamaño del escritorio cambiado.") }
         NotificationCenter.default.addObserver(forName: CorrectionStore.sharedChange, object: nil, queue: .main) { [weak self] note in
-            guard let self = self, note.userInfo?["local"] as? Bool == false, let key = note.userInfo?["key"] as? String else { return }
+            guard note.userInfo?["local"] as? Bool == false, let key = note.userInfo?["key"] as? String else { return }
+            CorrectionEngine.onRunLoop { [weak self] in
+            guard let self = self else { return }
             // Settings changed on another Mac for this same monitor.
             if self.engine.active, CorrectionStore.key(self.engine.physical) == key {
                 let next = CorrectionStore.load(self.engine.physical); self.settings = next; self.engine.update(next)
@@ -723,6 +820,7 @@ final class CorrectionPage: NSObject {
                 self.settings = CorrectionStore.load(id); self.showSettings(); self.refresh("Ajustes recibidos de otro Mac.")
             }
             self.autoStartIfNeeded()
+            }
         }
         reload()
     }
@@ -754,6 +852,7 @@ final class CorrectionPage: NSObject {
             return PhysicalDisplays.off.isEmpty ? "Conecta el monitor como pantalla ampliada." : "Primero activa el monitor en esta lista."
         }
         if let busy = monitorBusy(id) { return busy }
+        autoStarts = []; autoGaveUp = false
         guard ScreenCaptureAccess.permitted() else { CorrectionEngine.askForPermission(); return CorrectionEngine.permissionMissing }
         ModeKeeper.noteBuiltinIfMissing()
         let saved = CorrectionStore.load(id)
@@ -769,16 +868,27 @@ final class CorrectionPage: NSObject {
         guard engine.active else { return }
         engine.stop(reason: "Monitor apagado desde Pantallas. La corrección vuelve sola al activarlo.")
     }
-    private var autoPending: DispatchWorkItem?
+    private var autoPending: Timer?
     @objc private func screensChanged() {
         // Wait for macOS to settle (a monitor appears in steps), then check once.
-        autoPending?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.autoStartIfNeeded() }
-        autoPending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+        autoPending?.invalidate()
+        let timer = Timer(timeInterval: 2.5, repeats: false) { [weak self] _ in self?.autoStartIfNeeded() }
+        autoPending = timer; RunLoop.main.add(timer, forMode: .common)
     }
+    // Automatic starts in the last two minutes: if it keeps stopping by itself,
+    // stop trying (the screens would flash black every few seconds).
+    private var autoStarts: [Date] = []
+    private var autoGaveUp = false
     func autoStartIfNeeded() {
-        guard !engine.active, !engine.restarting, !waking else { return }
+        guard !engine.active, !engine.restarting, !waking, !autoGaveUp else { return }
         guard let id = CorrectionDisplays.candidates().first(where: { CorrectionStore.autoStart($0) && monitorBusy($0) == nil }) else { return }
+        autoStarts = autoStarts.filter { $0.timeIntervalSinceNow > -120 }
+        if autoStarts.count >= 3 {
+            autoGaveUp = true
+            refresh("La corrección se ha detenido sola varias veces seguidas; no vuelve a arrancar sola hasta que pulses Empezar.")
+            return
+        }
+        autoStarts.append(Date())
         let saved = CorrectionStore.load(id)
         CorrectionStore.restoreModes(monitor: id)
         if let error = engine.start(display: id, settings: saved) { reload(); refresh("No se pudo reanudar la corrección: \(error)"); return }
@@ -802,7 +912,7 @@ final class CorrectionPage: NSObject {
             guard let self = self, up else { self?.waking = false; self?.wakeFailed[id] = Date(); screen.destroy(); return }
             CorrectionDisplays.unmirror([id, screen.displayID])
             CorrectionStore.restoreModes(monitor: id)
-            CorrectionEngine.waitAsync(seconds: 4, until: { CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay && CGDisplayMirrorsDisplay(screen.displayID) == kCGNullDirectDisplay }) { [weak self] _ in
+            CorrectionEngine.waitAsync(seconds: 4, until: { CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay && CGDisplayMirrorsDisplay(screen.displayID) == kCGNullDirectDisplay }) { _ in CorrectionEngine.onRunLoop { [weak self] in
                 guard let self = self else { screen.destroy(); return }
                 self.waking = false
                 if let error = self.engine.start(display: id, settings: saved, prepared: screen) {
@@ -810,7 +920,7 @@ final class CorrectionPage: NSObject {
                 }
                 self.settings = saved; self.reload(); self.refresh("Monitor encendido y corrección puesta con tus ajustes guardados.")
                 self.restoreModesSoon(id)
-            }
+            } }
         }
     }
     // macOS may change the screens again once the corrected desktop appears.
@@ -830,10 +940,11 @@ final class CorrectionPage: NSObject {
         if engine.active { engine.stopByUser(); return }
         guard let id = selected else { refresh("Conecta el monitor como pantalla ampliada."); return }
         if let busy = monitorBusy(id) { refresh(busy); return }
+        autoStarts = []; autoGaveUp = false
         guard ScreenCaptureAccess.permitted() else { CorrectionEngine.askForPermission(); refresh(CorrectionEngine.permissionMissing); return }
         ModeKeeper.noteBuiltinIfMissing()
         startButton.isEnabled = false; statusLabel.stringValue = "Preparando el escritorio corregido…"
-        DispatchQueue.main.async {
+        CorrectionEngine.onRunLoop {
             // Another tool (Monitor HDMI) may have left the monitor at another size.
             CorrectionStore.restoreModes(monitor: id)
             let error = self.engine.start(display: id, settings: self.settings)
@@ -911,6 +1022,7 @@ final class CorrectionPage: NSObject {
     }
     private func label(_ key: String, _ value: Double) -> String { key == "scale" || key == "width" ? "\(Int(value)) %" : "\(Int(value)) px" }
     private func refresh(_ message: String?) {
+        if let message = message { NSLog("PRISON corrección: %@", message) }
         startButton.title = engine.active ? "Detener corrección" : "Empezar corrección"
         monitorPopup.isEnabled = !engine.active
         var lines: [String] = []
