@@ -38,15 +38,16 @@ struct PCLinkSettings: Equatable {
         }
         return s
     }
-    func save(defaults: UserDefaults = .standard) {
+    // False when the key could not be kept in the Keychain.
+    @discardableResult func save(defaults: UserDefaults = .standard) -> Bool {
         defaults.set(host, forKey: "PrisonDisplay.pc.host"); defaults.set(edge, forKey: "PrisonDisplay.pc.edge"); defaults.set(enabled, forKey: "PrisonDisplay.pc.enabled")
-        guard !key.isEmpty else { return }
+        guard !key.isEmpty else { return true }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: "default"]
         let data = Data(key.utf8)
-        if SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecItemNotFound {
-            var item = query; item[kSecValueData as String] = data; item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            SecItemAdd(item as CFDictionary, nil)
-        }
+        let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        guard updated == errSecItemNotFound else { return updated == errSecSuccess }
+        var item = query; item[kSecValueData as String] = data; item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
     }
     // "10.0.0.13", "torre.local" or "10.0.0.13:37941".
     static func endpoint(_ text: String) throws -> (String, UInt16) {

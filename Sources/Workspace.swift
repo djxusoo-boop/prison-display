@@ -80,16 +80,13 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     let correctionButton = RoleButton(title: "⧉  Corregir monitor", target: nil, action: nil)
     let displaysButton = RoleButton(title: "▣  Pantallas", target: nil, action: nil)
     let displaysPage = DisplaysPage()
-    #if !LEGACY
+    // «Corregir monitor» (macOS 12.3 or later, also on Intel Macs such as the iMac).
     private var correctionPageStorage: AnyObject?
-    #endif
     private var brightnessNodes: [UUID: BrightnessNode] = [:]
     private var brightnessQueryTimer: Timer?
     private var correctionShareTimer: Timer?, correctionSharePending: Timer?
     private func shareCorrections() {
-        #if !LEGACY
         for data in CorrectionStore.shares() { broadcastBrightness(.correctionShare, data, except: nil) }
-        #endif
     }
     private lazy var brightnessHostName = Host.current().localizedName ?? "Este Mac"
     private var toolPages: [Tool: NSView] = [:]
@@ -123,6 +120,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         return id
     }()
     private var brightnessDeadline: Timer?
+    private var bottomEditingUntil = Date.distantPast
 
     private var sendContent: NSView!
     private var receiveContent: NSView!
@@ -195,9 +193,9 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             button.setAccessibilityLabel(title == "−" ? "Bajar brillo conjunto" : "Subir brillo conjunto"); brightnessButtons.addArrangedSubview(button)
         }
         autoStartStatus.font = .systemFont(ofSize: 11); autoStartStatus.textColor = NSColor(calibratedWhite: 0.7, alpha: 1); autoStartStatus.isHidden = true
-        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [icon, brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, roleHint, toolsLabel, displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, clipboardSwitch, autoStartSwitch, expertSwitch, autoStartStatus] { side.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         icon.widthAnchor.constraint(equalToConstant: 56).isActive = true; icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
-        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, toolsLabel, displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
+        for view in [brand, computer, separator, screensLabel, sendButton, secondSendButton, receiveButton, screenSummary, roleHint, toolsLabel, displaysButton, mapButton, brightnessButton, hdmiButton, correctionButton, pcButton, optionsLabel, expertSwitch, clipboardSwitch, autoStartSwitch, autoStartStatus] { view.widthAnchor.constraint(equalToConstant: 200).isActive = true }
         side.setCustomSpacing(22, after: screenSummary); side.setCustomSpacing(22, after: pcButton)
         separator.heightAnchor.constraint(equalToConstant: 1).isActive = true
         for button in [sendButton, secondSendButton, receiveButton] { button.heightAnchor.constraint(equalToConstant: 46).isActive = true; button.target = self; button.isBordered = false }
@@ -255,15 +253,24 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         toolPages[.displays] = displaysPage.view
         displaysPage.rows = { [weak self] in self?.displayRows() ?? [] }
         correctionButton.isHidden = true
-        #if !LEGACY
         if #available(macOS 12.3, *) {
             let page = CorrectionPage(); correctionPageStorage = page
             toolPages[.correction] = page.view; correctionButton.isHidden = false
+            // The monitor under the corrected desktop is only its canvas: the map
+            // shows the desktop instead, and moving it takes the monitor along.
+            DeviceMapView.hiddenDisplays = { page.engine.active ? [page.engine.physical] : [] }
+            DeviceMapView.correctedTitle = { page.engine.active ? CorrectionDisplays.name(page.engine.physical) + " corregida" : "Escritorio corregido" }
+            sender.deviceMap.onMoveScreen = { id, origin in
+                if page.engine.active, id == page.engine.virtualID { page.engine.moveDesktop(to: origin) } else { DeviceMapView.applyOrigin(id, origin) }
+            }
+            // "Monitor HDMI" and the correction cannot share a monitor.
+            sender.localBusy = { id in
+                page.engine.active && page.engine.physical == id ? "Este monitor lo está usando Corregir monitor. Para darle aquí más espacio, detén antes la corrección." : nil
+            }
             NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
                 if self?.tool == .correction, !page.engine.active { page.reload() }
             }
         }
-        #endif
         brightnessPage.onSet = { [weak self] target, percent in self?.setBrightness(target: target, percent: percent) }
         pcButton.isHidden = toolPages[.pc] == nil
         for view in [sendContent!, secondSendContent!, receiveContent!] + Array(toolPages.values) {
@@ -278,19 +285,20 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         edit.addItem(withTitle: "Copiar", action: #selector(NSText.copy(_:)), keyEquivalent: "c"); edit.addItem(withTitle: "Pegar", action: #selector(NSText.paste(_:)), keyEquivalent: "v"); edit.addItem(withTitle: "Seleccionar todo", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         NSApp.mainMenu = menu
         LocalBrightness.reapplySoftware()
+        if !CommandLine.arguments.contains("--layout-preview") { PhysicalDisplays.restoreAtLaunch() }
         PhysicalDisplays.enforce()
+        if !CommandLine.arguments.contains("--layout-preview") { ModeKeeper.start() }
         // Monitor corrections travel to the other Macs: right after a change,
         // and every 15 s for Macs that connect later (each keeps the newest).
-        #if !LEGACY
         NotificationCenter.default.addObserver(forName: CorrectionStore.sharedChange, object: nil, queue: .main) { [weak self] note in
             guard note.userInfo?["local"] as? Bool == true else { return }
             self?.correctionSharePending?.invalidate()
             self?.correctionSharePending = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in self?.shareCorrections() }
         }
         correctionShareTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.shareCorrections() }
-        #endif
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             LocalBrightness.reapplySoftware(); if self?.tool == .brightness { self?.refreshBrightnessPage() }
+            self?.keepWindowOnScreen()
         }
         brightnessQueue.async { [weak self] in
             let value = ADBrightness.read()
@@ -301,10 +309,17 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             }
         }
         setExpertMode(expertMode)
-        refreshRole(); window.center(); window.setFrameAutosaveName("PrisonDisplay.workspace")
+        refreshRole(); window.center(); window.setFrameAutosaveName("PrisonDisplay.workspace"); keepWindowOnScreen()
         if !CommandLine.arguments.contains("--layout-preview") { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); activate(); applyAutoStartPreference()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in OldCopies.offerCleanup(window: self?.window) }
             summaryTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refreshSummary() } }
+    }
+    // The saved place may be on a screen that is gone, moved or smaller now:
+    // then the window opened where nobody could see it. Bring it to the middle
+    // of the main screen whenever too little of it is visible.
+    private func keepWindowOnScreen() {
+        if let window = window { prisonKeepOnScreen(window) }
+        if let viewer = receiver.viewer, viewer.isVisible { prisonKeepOnScreen(viewer) }
     }
     @objc private func toggleClipboard() { ClipboardSync.shared.enabled = clipboardSwitch.state == .on }
     @objc private func toggleExpertMode() { setExpertMode(expertSwitch.state == .on) }
@@ -369,7 +384,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     // nil = every screen of every connected Mac; "node" or "node/screen" = one.
     func setBrightness(target: String?, percent: Int) {
         guard let command = try? BrightnessCommand(percent: percent, target: target) else { return }
-        if target == nil { brightnessSlider.doubleValue = Double(percent); brightnessLabel.stringValue = "Brillo de todas · \(percent) %" }
+        if target == nil { brightnessSlider.doubleValue = Double(percent); brightnessLabel.stringValue = "Brillo de todas · \(percent) %"; bottomEditingUntil = Date().addingTimeInterval(2) }
         brightnessPending?.cancel()
         // Collapse slider movement before hardware or network work; no work on the video queue.
         let work = DispatchWorkItem { [weak self] in self?.beginBrightness(command, source: nil) }
@@ -386,12 +401,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         guard (role == .send && source < 2) || (role == .receive && source == 2) else { return }
         if kind == .correctionShare {
             // Newer settings for a monitor: keep them and pass them on.
-            #if LEGACY
-            // This Mac cannot correct monitors; it only passes the copy on.
-            if role == .send { broadcastBrightness(kind, data, except: source) }
-            #else
             if CorrectionStore.merge(data), role == .send { broadcastBrightness(kind, data, except: source) }
-            #endif
             return
         }
         if kind == .brightnessCommand, let command = try? BrightnessCommand(data: data) {
@@ -440,6 +450,12 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             brightnessNodes[brightnessNode] = BrightnessNode(node: brightnessNode, name: brightnessHostName, panels: LocalBrightness.screens().map { $0.panel }, seen: Date(), local: true)
         }
         brightnessPage.update(Array(brightnessNodes.values))
+        // The bar at the bottom shows the same average as "Todas" on the page.
+        let levels = brightnessNodes.values.flatMap { $0.panels.compactMap { $0.percent } }
+        if !levels.isEmpty, Date() > bottomEditingUntil {
+            let average = levels.reduce(0, +) / levels.count
+            brightnessSlider.doubleValue = Double(max(5, average)); brightnessLabel.stringValue = "Brillo de todas · \(average) %"
+        }
     }
     // While the Brightness page is open, ask the connected Macs for their screens.
     private func refreshBrightnessQueries() {
@@ -473,12 +489,14 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
             let name = PhysicalDisplays.name(id)
             let off = PhysicalDisplays.isOff(id)
             let mirrored = CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay
-            let detail = off ? "Monitor externo apagado (en negro). Marca la casilla para encenderlo." : "Monitor externo · \(PhysicalDisplays.modeText(id))" + (mirrored ? " · duplicando la pantalla del Mac" : "")
-            rows.append(Row(title: name, detail: detail, on: !off, enabled: true, toggle: { [weak self] on in
-                #if !LEGACY
-                // The corrected desktop uses this monitor: stop it first.
-                if !on, #available(macOS 12.3, *), let page = self?.correctionPageStorage as? CorrectionPage, page.engine.active, page.engine.physical == id { _ = page.setActive(false) }
-                #endif
+            let enlarged = sender.localVirtualActive && sender.localPhysicalID == id
+            let detail = off ? "Monitor externo apagado (en negro). Marca la casilla para encenderlo." : enlarged ? "Monitor externo · mostrando el escritorio ampliado (apartado Monitor HDMI)" : "Monitor externo · \(PhysicalDisplays.modeText(id))" + (mirrored ? " · duplicando la pantalla del Mac" : "")
+            let main = id == CGMainDisplayID() && !off
+            rows.append(Row(title: name, detail: main ? detail + " · pantalla principal (no se apaga desde aquí)" : detail, on: !off, enabled: !main, toggle: { [weak self] on in
+                // A tool drawing on this monitor stops first. The correction is
+                // only paused: it comes back when the monitor is switched on.
+                if !on, #available(macOS 12.3, *), let page = self?.correctionPageStorage as? CorrectionPage, page.engine.active, page.engine.physical == id { page.pauseForMonitorOff() }
+                if !on, let sender = self?.sender, sender.localVirtualActive, sender.localPhysicalID == id { sender.stopLocalVirtualDisplay() }
                 return PhysicalDisplays.setEnabled(id, on, name: name) }))
         }
         if role == .send {
@@ -486,16 +504,17 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
                 let phase = panel.engine.phase
                 rows.append(Row(title: "Pantalla virtual · " + WorkspaceScreenNames.label(slot: slot, defaults: workspaceDefaults), detail: "Para otro Mac · " + phase.title, on: phase != .idle && phase != .failed, enabled: true, toggle: { on in if on { panel.start() } else { panel.stop() }; return nil }))
             }
+        }
+        // «Monitor HDMI» works whether this Mac sends or receives (the iMac uses it).
+        if !PhysicalDisplays.externals().isEmpty || sender.localVirtualActive {
             rows.append(Row(title: "Monitor HDMI ampliado", detail: "Escritorio virtual más grande en el monitor externo (apartado Monitor HDMI).", on: sender.localVirtualActive, enabled: true, toggle: { [weak self] on in
                 guard let self = self else { return nil }
                 if on { self.sender.startLocalVirtualDisplay() } else { self.sender.stopLocalVirtualDisplay() }
                 return on && !self.sender.localVirtualActive ? "No se pudo activar: mira el apartado Monitor HDMI." : nil }))
         }
-        #if !LEGACY
         if #available(macOS 12.3, *), let page = correctionPageStorage as? CorrectionPage {
             rows.append(Row(title: "Escritorio corregido", detail: "Virtual, dibujado en el monitor externo con tus ajustes (apartado Corregir monitor).", on: page.engine.active, enabled: true, toggle: { on in page.setActive(on) }))
         }
-        #endif
         return rows
     }
     private func activate() {
@@ -554,9 +573,9 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     }
     @objc func chooseTool(_ sender: NSButton) {
         tool = Tool(rawValue: sender.tag); refreshRole(); refreshBrightnessQueries()
-        #if !LEGACY
+        if tool == .hdmi { self.sender.refreshLocalDisplays() }
+        if tool == .map { self.sender.deviceMap.reload() }
         if tool == .correction, #available(macOS 12.3, *), let page = correctionPageStorage as? CorrectionPage, !page.engine.active { page.reload() }
-        #endif
     }
     @objc func chooseSend() { tool = nil; refreshBrightnessQueries(); select(.send); selectedScreen = 0; refreshRole() }
     @objc func chooseSecondSend() {
@@ -567,7 +586,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
     @objc func chooseReceive() { tool = nil; refreshBrightnessQueries(); select(.receive); refreshRole() }
     @objc private func fullscreenReceivers() {
         if role == .receive { receiver.fullscreen(); return }
-        guard role == .send, secondEnabled else { return }
+        guard role == .send else { return }
         let targets = Self.fullscreenTargets(first: sender.engine.phase, second: secondSender.engine.phase, secondEnabled: secondEnabled)
         guard !targets.isEmpty else {
             fullscreenReceiversStatus.stringValue = "No hay pantallas conectadas ahora."
@@ -575,7 +594,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         }
         if targets.contains(0) { sender.engine.requestFullscreen() }
         if targets.contains(1) { secondSender.engine.requestFullscreen() }
-        let names = targets.map { "Pantalla \($0 + 1)" }
+        let names = targets.map { WorkspaceScreenNames.label(slot: $0, defaults: workspaceDefaults) }
         fullscreenReceiversStatus.stringValue = "Orden enviada a " + names.joined(separator: " y ") + "."
     }
     @objc func footerAction() {
@@ -597,9 +616,7 @@ final class PrisonWorkspaceController: NSObject, NSApplicationDelegate, NSWindow
         receiver.applicationWillResignActive(notification)
     }
     func applicationWillTerminate(_ notification: Notification) { summaryTimer?.invalidate(); summaryTimer = nil; brightnessQueryTimer?.invalidate();
-        #if !LEGACY
-        if #available(macOS 12.3, *) { (correctionPageStorage as? CorrectionPage)?.engine.stop(reason: nil) }
-        #endif
+        if #available(macOS 12.3, *) { (correctionPageStorage as? CorrectionPage)?.engine.stop(reason: nil, waitNow: true) }
         brightnessPending?.cancel(); brightnessDeadline?.invalidate(); sender.deactivateWorkspace(); secondSender.deactivateWorkspace(); receiver.deactivateWorkspace()
         #if !LEGACY
         WindowsLink.shared.bridge.stop()

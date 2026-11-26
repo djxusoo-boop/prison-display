@@ -1,4 +1,4 @@
-#if UNIFIED && !LEGACY
+#if UNIFIED
 import AppKit
 import Carbon.HIToolbox
 import CoreMedia
@@ -26,7 +26,9 @@ struct CorrectionSettings: Codable, Equatable {
     var width: Double?
     static let widthRange = 40.0...160.0
     static let screenAspects: [(String, Double?)] = [("Automática", nil), ("16:9 · TV panorámica", 16.0 / 9), ("16:10", 16.0 / 10), ("4:3", 4.0 / 3), ("5:4 · sin estirar", 5.0 / 4)]
-    static let desktopSizes: [(Int, Int)] = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (1680, 1050), (1920, 1200)]
+    // The desktop drawn on the monitor: 16:9 sizes, then 16:10, each from small to large.
+    static let desktopSizes: [(Int, Int)] = [(1280, 720), (1600, 900), (1920, 1080), (2048, 1152), (2560, 1440), (3200, 1800), (3840, 2160),
+                                             (1440, 900), (1680, 1050), (1920, 1200), (2560, 1600)]
     static let scaleRange = 0.3...1.5
     // Keep the margins; put the image back in the middle at the largest size.
     mutating func centerAndFit() { scale = 1; offsetX = 0; offsetY = 0 }
@@ -57,6 +59,30 @@ struct CorrectionSettings: Codable, Equatable {
         x = min(max(0, x), w - size.width); y = min(max(0, y), h - size.height)
         return CGRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height)
     }
+    // How far "Escala" and "Mover" can go with the other settings as they are.
+    // Beyond these the picture would be cut, so they would do nothing: the
+    // sliders end there. A move range of zero means there is no room at all.
+    struct Limits: Equatable { var scale: ClosedRange<Double>; var offsetX: ClosedRange<Double>; var offsetY: ClosedRange<Double> }
+    static func limits(frame: CGSize, desktop: CGSize, settings: CorrectionSettings, physicalAspect: Double? = nil) -> Limits {
+        func rect(_ change: (inout CorrectionSettings) -> Void) -> CGRect {
+            var s = settings; change(&s); return layout(frame: frame, desktop: desktop, settings: s, physicalAspect: physicalAspect)
+        }
+        let biggest = rect { $0.scale = scaleRange.upperBound }.size
+        var top = scaleRange.upperBound
+        for percent in Int((scaleRange.lowerBound * 100).rounded())...Int((scaleRange.upperBound * 100).rounded()) where rect({ $0.scale = Double(percent) / 100 }).size == biggest {
+            top = Double(percent) / 100; break
+        }
+        let centred = rect { $0.offsetX = 0; $0.offsetY = 0 }
+        let w = Double(max(1, frame.width)), h = Double(max(1, frame.height))
+        return Limits(scale: scaleRange.lowerBound...max(scaleRange.lowerBound, top),
+                      offsetX: min(0, -Double(centred.minX))...max(0, w - Double(centred.maxX)),
+                      offsetY: min(0, -Double(centred.minY))...max(0, h - Double(centred.maxY)))
+    }
+    // Keeps the values where they still do something (what the monitor shows).
+    mutating func clamp(to limits: Limits) {
+        func inside(_ v: Double, _ r: ClosedRange<Double>) -> Double { min(max(v.isFinite ? v : 0, r.lowerBound), r.upperBound) }
+        scale = inside(scale, limits.scale); offsetX = inside(offsetX, limits.offsetX); offsetY = inside(offsetY, limits.offsetY)
+    }
 }
 
 enum CorrectionStore {
@@ -79,22 +105,22 @@ enum CorrectionStore {
     // Screen sizes chosen by the user while the correction runs. When macOS
     // switches the monitor on by itself it may pick others (1920 × 1080 on a
     // VGA TV, a smaller built-in screen); these are put back.
+    // The monitor's size is taken only the first time, or while the screens are
+    // stable: right after a change it may be macOS's choice, not the user's.
+    // (The Mac's own screen is looked after by ModeKeeper.)
     static func rememberModes(monitor: CGDirectDisplayID) {
-        for (id, key) in [(monitor, key(monitor) + ".mode"), (CGMainDisplayID(), "PrisonDisplay.correction.builtinMode")] where id != 0 {
-            guard let mode = CGDisplayCopyDisplayMode(id) else { continue }
-            let size = [mode.width, mode.height]
-            guard defaults.array(forKey: key) as? [Int] != size else { continue }
-            defaults.set(size, forKey: key)
-            if id == monitor { touched(Self.key(monitor)) }
-        }
+        let full = key(monitor) + ".mode"
+        guard monitor != 0, let mode = CGDisplayCopyDisplayMode(monitor) else { return }
+        let size = [mode.width, mode.height]
+        guard defaults.array(forKey: full) as? [Int] != size, defaults.object(forKey: full) == nil || ModeKeeper.isStable else { return }
+        defaults.set(size, forKey: full); touched(key(monitor))
     }
     static func restoreModes(monitor: CGDirectDisplayID) {
-        let builtin = CGMainDisplayID()
-        for (id, key) in [(monitor, key(monitor) + ".mode"), (builtin, "PrisonDisplay.correction.builtinMode")] where id != 0 {
-            guard let size = defaults.array(forKey: key) as? [Int], size.count == 2 else { continue }
-            CorrectionDisplays.setMode(id, width: size[0], height: size[1])
-        }
+        if let size = defaults.array(forKey: key(monitor) + ".mode") as? [Int], size.count == 2 { CorrectionDisplays.setMode(monitor, width: size[0], height: size[1]) }
+        ModeKeeper.restore()
     }
+    // A size the user picked in macOS for a corrected monitor: the other Macs get it.
+    static func modeChangedByUser(_ monitor: CGDirectDisplayID) { touched(key(monitor)) }
     static func save(_ settings: CorrectionSettings, for display: CGDirectDisplayID) {
         guard let data = try? JSONEncoder().encode(settings), defaults.data(forKey: key(display)) != data else { return }
         defaults.set(data, forKey: key(display)); touched(key(display))
@@ -187,17 +213,7 @@ enum CorrectionDisplays {
         for id in mirrored { CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay) }
         CGCompleteDisplayConfiguration(config, .forSession)
     }
-    static func setMode(_ id: CGDirectDisplayID, width: Int, height: Int) {
-        if let current = CGDisplayCopyDisplayMode(id), current.width == width, current.height == height { return }
-        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
-        let modes = ((CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []).filter { $0.width == width && $0.height == height && $0.isUsableForDesktopGUI() }
-        // Sharpest first (Retina), then 60 Hz when offered.
-        guard let mode = modes.max(by: { ($0.pixelWidth, Int($0.refreshRate) == 60 ? 1 : 0) < ($1.pixelWidth, Int($1.refreshRate) == 60 ? 1 : 0) }) else { return }
-        var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success else { return }
-        CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
-        CGCompleteDisplayConfiguration(config, .forSession)
-    }
+    static func setMode(_ id: CGDirectDisplayID, width: Int, height: Int) { ModeKeeper.setMode(id, width: width, height: height) }
     // External physical monitors that can be corrected.
     static func candidates() -> [CGDirectDisplayID] {
         var ids = [CGDirectDisplayID](repeating: 0, count: 16); var count: UInt32 = 0
@@ -281,6 +297,13 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // Main thread. Returns an error message, or nil once the image is on the monitor.
     private(set) var restarting = false
+    static let permissionMissing = "Falta el permiso de Grabación de pantalla para PRISON DISPLAY: actívalo en Ajustes → Privacidad → Grabación de pantalla, cierra la app y vuelve a abrirla."
+    // Only when the user starts it by hand: macOS shows its own request, lists
+    // the app and the settings open at the right place.
+    static func askForPermission() {
+        ScreenCaptureAccess.request()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
+    }
     // `prepared`: a corrected desktop already created (to wake the monitor);
     // it is used instead of a new one, or destroyed if the start fails.
     func start(display: CGDirectDisplayID, settings: CorrectionSettings, origin knownOrigin: CGPoint? = nil, prepared: ADVirtualScreen? = nil) -> String? {
@@ -293,9 +316,7 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         guard CorrectionDisplays.isOnline(display), CGDisplayIsBuiltin(display) == 0, display != CGMainDisplayID(), CGDisplayMirrorsDisplay(display) == kCGNullDirectDisplay else {
             return "El monitor debe estar conectado como pantalla ampliada (no duplicada) y no puede ser la principal."
         }
-        guard ScreenCaptureAccess.permitted() else {
-            return "Falta el permiso de Grabación de pantalla para PRISON DISPLAY (Ajustes → Privacidad y seguridad)."
-        }
+        guard ScreenCaptureAccess.permitted() else { return Self.permissionMissing }
         self.settings = settings; physical = display
         note = CorrectionDisplays.preferSixtyHertz(display)
         let origin = knownOrigin ?? CGDisplayBounds(display).origin
@@ -342,8 +363,17 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         applyLayout()
     }
 
+    // The map moved the corrected desktop: the monitor (only its canvas) goes with it,
+    // and comes back to that place when the correction stops.
+    func moveDesktop(to origin: CGPoint) {
+        guard active else { return }
+        physicalOrigin = CGPoint(x: origin.x.rounded(), y: origin.y.rounded())
+        arrange(); reassertWindow()
+    }
+
     // Main thread. Restores the monitor as an ordinary extended display.
-    func stop(reason: String? = "Corrección detenida.", restoreOrigin: Bool = true) {
+    // `waitNow`: the app is quitting, so the monitor is put back before returning.
+    func stop(reason: String? = "Corrección detenida.", restoreOrigin: Bool = true, waitNow: Bool = false) {
         guard let screen = virtual else { return }
         NotificationCenter.default.removeObserver(self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
         guardTimer?.invalidate(); guardTimer = nil
@@ -358,7 +388,7 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         // Put the monitor back once macOS has removed the virtual desktop. Waiting
         // without blocking: the removal is reported through this same thread.
         let monitor = physical, origin = restoreOrigin ? physicalOrigin : nil
-        Self.waitAsync(seconds: 15, until: { !CorrectionDisplays.isOnline(id) }) { _ in
+        let putBack = {
             guard let origin = origin, CorrectionDisplays.isOnline(monitor) else { return }
             var config: CGDisplayConfigRef?
             if CGBeginDisplayConfiguration(&config) == .success {
@@ -366,6 +396,8 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
                 CGCompleteDisplayConfiguration(config, .forSession)
             }
         }
+        if waitNow { _ = Self.wait(seconds: 3) { !CorrectionDisplays.isOnline(id) }; putBack() }
+        else { Self.waitAsync(seconds: 15, until: { !CorrectionDisplays.isOnline(id) }) { _ in putBack() } }
         physicalOrigin = nil; framesShown = 0
         if let reason = reason { onStopped?(reason) }
     }
@@ -415,6 +447,53 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         window.setFrame(physicalFrameInCocoa(), display: true)
         window.orderFrontRegardless()
         applyLayout()
+        rescueWindows()
+    }
+    // Windows left on the monitor itself sit under the canvas, out of sight and
+    // out of reach of the pointer: bring them onto the corrected desktop, at the
+    // same place. This app's own windows always; other apps' through
+    // Accessibility when it is allowed.
+    private func rescueWindows() {
+        guard active, let canvas = window else { return }
+        let monitor = CGDisplayBounds(physical), desktop = CGDisplayBounds(virtualID)
+        guard !monitor.isEmpty, !desktop.isEmpty else { return }
+        func onMonitor(_ r: CGRect) -> Bool { monitor.contains(CGPoint(x: r.midX, y: r.midY)) }
+        func target(_ r: CGRect) -> CGPoint {
+            let x = desktop.minX + (r.minX - monitor.minX), y = desktop.minY + (r.minY - monitor.minY)
+            return CGPoint(x: min(max(desktop.minX, x), max(desktop.minX, desktop.maxX - r.width)),
+                           y: min(max(desktop.minY, y), max(desktop.minY, desktop.maxY - r.height)))
+        }
+        let primary = CGDisplayBounds(CGMainDisplayID()).height
+        for w in NSApp.windows where w !== canvas && w.isVisible {
+            let f = w.frame, r = CGRect(x: f.minX, y: primary - f.maxY, width: f.width, height: f.height)
+            guard onMonitor(r) else { continue }
+            let p = target(r); w.setFrameOrigin(NSPoint(x: p.x, y: primary - p.y - f.height))
+        }
+        guard AXIsProcessTrusted() else { return }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var owners = Set<pid_t>()
+        for info in list {
+            guard info[kCGWindowLayer as String] as? Int == 0, let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != me,
+                  let bounds = info[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: bounds), onMonitor(r) else { continue }
+            owners.insert(pid)
+        }
+        for pid in owners {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value) == .success, let windows = value as? [AXUIElement] else { continue }
+            for w in windows {
+                var position: CFTypeRef?, size: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &position) == .success,
+                      AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &size) == .success,
+                      let pv = position, let sv = size, CFGetTypeID(pv) == AXValueGetTypeID(), CFGetTypeID(sv) == AXValueGetTypeID() else { continue }
+                var p = CGPoint.zero, s = CGSize.zero
+                AXValueGetValue(pv as! AXValue, .cgPoint, &p); AXValueGetValue(sv as! AXValue, .cgSize, &s)
+                let r = CGRect(origin: p, size: s)
+                guard onMonitor(r) else { continue }
+                var t = target(r)
+                if let moved = AXValueCreate(.cgPoint, &t) { AXUIElementSetAttributeValue(w, kAXPositionAttribute as CFString, moved) }
+            }
+        }
     }
     // Whether the canvas is really on the monitor (for the status and the self-test).
     var canvasVisible: Bool {
@@ -440,8 +519,15 @@ final class CorrectionEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         resize = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
-    private func configuration(size: CGSize) -> SCStreamConfiguration {
+    private func configuration(size drawn: CGSize) -> SCStreamConfiguration {
         let config = SCStreamConfiguration()
+        // Before macOS 14 (the iMac on macOS 12) a capture with another shape
+        // than the desktop gets black bars added: capture with the desktop's own
+        // shape at the drawn height; the layer stretches it into the rectangle.
+        var size = drawn
+        if #available(macOS 14.0, *) {} else {
+            size.width = (drawn.height * CGFloat(settings.desktopWidth) / CGFloat(max(1, settings.desktopHeight))).rounded()
+        }
         config.width = max(2, Int(size.width) & ~1); config.height = max(2, Int(size.height) & ~1)
         config.minimumFrameInterval = CMTimeMake(value: 1, timescale: 60)
         config.queueDepth = 5; config.showsCursor = true; config.pixelFormat = kCVPixelFormatType_32BGRA
@@ -610,6 +696,9 @@ final class CorrectionPage: NSObject {
         slider("bottom", "Inferior", 0, 400, unit: " px", in: margins)
         engine.onStopped = { [weak self] reason in self?.refresh(reason) }
         engine.onUserStopped = { display in CorrectionStore.setAutoStart(false, for: display) }
+        // The size of a corrected monitor is kept like the Mac's own screen.
+        ModeKeeper.monitorKey = { id in CorrectionStore.autoStart(id) ? CorrectionStore.key(id) + ".mode" : nil }
+        ModeKeeper.onMonitorSaved = { id in CorrectionStore.modeChangedByUser(id) }
         // Start again by itself when the monitor comes back or the app opens.
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if !CommandLine.arguments.contains("--layout-preview") && !CommandLine.arguments.contains("--correction-self-test") {
@@ -656,11 +745,23 @@ final class CorrectionPage: NSObject {
     func setActive(_ on: Bool) -> String? {
         guard on else { engine.stopByUser(); refresh(nil); return nil }
         guard !engine.active, !engine.restarting else { return nil }
-        guard let id = selected ?? CorrectionDisplays.candidates().first else { return "Conecta el monitor como pantalla ampliada." }
+        guard let id = selected ?? CorrectionDisplays.candidates().first else {
+            return PhysicalDisplays.off.isEmpty ? "Conecta el monitor como pantalla ampliada." : "Primero activa el monitor en esta lista."
+        }
+        guard ScreenCaptureAccess.permitted() else { CorrectionEngine.askForPermission(); return CorrectionEngine.permissionMissing }
+        ModeKeeper.noteBuiltinIfMissing()
         let saved = CorrectionStore.load(id)
+        // Another tool (Monitor HDMI) may have left the monitor at another size.
+        CorrectionStore.restoreModes(monitor: id)
         if let error = engine.start(display: id, settings: saved) { return error }
         CorrectionStore.setAutoStart(true, for: id); CorrectionStore.rememberModes(monitor: id); settings = saved; reload()
         return nil
+    }
+    // The monitor is being switched off from "Pantallas": stop without
+    // forgetting, so the correction comes back when it is switched on.
+    func pauseForMonitorOff() {
+        guard engine.active else { return }
+        engine.stop(reason: "Monitor apagado desde Pantallas. La corrección vuelve sola al activarlo.")
     }
     private var autoPending: DispatchWorkItem?
     @objc private func screensChanged() {
@@ -722,8 +823,12 @@ final class CorrectionPage: NSObject {
         guard !engine.restarting else { return }
         if engine.active { engine.stopByUser(); return }
         guard let id = selected else { refresh("Conecta el monitor como pantalla ampliada."); return }
+        guard ScreenCaptureAccess.permitted() else { CorrectionEngine.askForPermission(); refresh(CorrectionEngine.permissionMissing); return }
+        ModeKeeper.noteBuiltinIfMissing()
         startButton.isEnabled = false; statusLabel.stringValue = "Preparando el escritorio corregido…"
         DispatchQueue.main.async {
+            // Another tool (Monitor HDMI) may have left the monitor at another size.
+            CorrectionStore.restoreModes(monitor: id)
             let error = self.engine.start(display: id, settings: self.settings)
             if error == nil { CorrectionStore.setAutoStart(true, for: id); CorrectionStore.rememberModes(monitor: id) }
             self.startButton.isEnabled = true
@@ -734,7 +839,10 @@ final class CorrectionPage: NSObject {
     @objc private func resetMargins() { settings.left = 0; settings.right = 0; settings.top = 0; settings.bottom = 0; showSettings(); changed() }
     @objc private func sliderMoved(_ slider: NSSlider) {
         guard let key = sliders.first(where: { $0.value.0 === slider })?.key else { return }
-        let value = slider.doubleValue.rounded()
+        var value = slider.doubleValue.rounded()
+        // Easy to leave exactly at the neutral value: 100 % wide, not moved.
+        if key == "width", abs(value - 100) <= 3 { value = 100; slider.doubleValue = 100 }
+        if key == "offsetX" || key == "offsetY", abs(value) <= 4 { value = 0; slider.doubleValue = 0 }
         switch key {
         case "scale": settings.scale = value / 100
         case "width": settings.width = value == 100 ? nil : value
@@ -748,14 +856,47 @@ final class CorrectionPage: NSObject {
         sliders[key]?.1.stringValue = label(key, value)
         changed()
     }
+    // (The monitor's own size is kept by ModeKeeper when the user changes it in macOS.)
     private func changed() {
-        if let id = selected { CorrectionStore.save(settings, for: id); if engine.active, engine.physical == id { CorrectionStore.rememberModes(monitor: id) } }
+        applyLimits()
+        if let id = selected { CorrectionStore.save(settings, for: id) }
         if engine.active, !engine.restarting { engine.update(settings) }
         refresh(nil)
     }
+    // The monitor in signal pixels, as the compositor sees it.
+    private func signalSize(_ id: CGDirectDisplayID) -> CGSize {
+        let size = CGDisplayBounds(id).size
+        let scale = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }?.backingScaleFactor ?? 1
+        return CGSize(width: size.width * scale, height: size.height * scale)
+    }
+    // Scale and move sliders end where the picture stops changing.
+    private func applyLimits() {
+        guard let id = selected ?? (engine.active ? engine.physical : nil) else { return }
+        let limits = CorrectionSettings.limits(frame: signalSize(id), desktop: CGSize(width: settings.desktopWidth, height: settings.desktopHeight), settings: settings, physicalAspect: CorrectionDisplays.physicalAspect(id))
+        settings.clamp(to: limits)
+        let full = settings.scale >= limits.scale.upperBound - 0.001
+        let rows: [(String, ClosedRange<Double>, Double, String)] = [
+            ("scale", limits.scale, 100, "La imagen ya es lo más grande que cabe sin cortarla. Para agrandarla más, quita márgenes."),
+            ("offsetX", limits.offsetX, 1, full ? "La imagen ya ocupa todo el ancho: no hay sitio para moverla. Baja la Escala para poder moverla." : "La imagen ya ocupa todo el ancho: no hay sitio para moverla."),
+            ("offsetY", limits.offsetY, 1, full ? "La imagen ya ocupa todo el alto: no hay sitio para moverla. Baja la Escala para poder moverla." : "La imagen ya ocupa todo el alto: no hay sitio para moverla.")]
+        for (key, range, factor, why) in rows {
+            guard let (slider, value) = sliders[key] else { continue }
+            let low = (range.lowerBound * factor).rounded(), high = (range.upperBound * factor).rounded()
+            let room = high > low
+            slider.minValue = room ? low : low - 1; slider.maxValue = room ? high : low + 1
+            slider.isEnabled = room
+            slider.toolTip = room ? nil : why
+            value.toolTip = slider.toolTip
+            // A value pulled back inside the range shows where it really is.
+            let current = key == "scale" ? settings.scale * 100 : (key == "offsetX" ? settings.offsetX : settings.offsetY)
+            slider.doubleValue = current
+            value.stringValue = room ? label(key, current) : "sin hueco"
+        }
+    }
     private func showSettings() {
+        applyLimits()
         let values: [String: Double] = ["scale": settings.scale * 100, "width": settings.width ?? 100, "offsetX": settings.offsetX, "offsetY": settings.offsetY, "left": settings.left, "right": settings.right, "top": settings.top, "bottom": settings.bottom]
-        for (key, value) in values { sliders[key]?.0.doubleValue = value; sliders[key]?.1.stringValue = label(key, value) }
+        for (key, value) in values { sliders[key]?.0.doubleValue = value; sliders[key]?.1.stringValue = sliders[key]?.0.isEnabled == false ? "sin hueco" : label(key, value) }
         if let index = CorrectionSettings.desktopSizes.firstIndex(where: { $0.0 == settings.desktopWidth && $0.1 == settings.desktopHeight }) { desktopPopup.selectItem(at: index) }
         let automatic = selected.flatMap { CorrectionDisplays.physicalAspect($0) }
         aspectPopup.item(at: 0)?.title = "Automática · " + CorrectionDisplays.aspectName(automatic)

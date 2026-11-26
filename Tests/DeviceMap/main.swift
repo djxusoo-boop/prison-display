@@ -28,16 +28,20 @@ func event(_ type: NSEvent.EventType, _ p: CGPoint) -> NSEvent {
     NSEvent.mouseEvent(with: type, location: view.convert(p, to: nil), modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
 }
 // The PC block sits right; drag it to the left side.
-view.mouseDown(with: event(.leftMouseDown, CGPoint(x: 560, y: 115)))
-view.mouseDragged(with: event(.leftMouseDragged, CGPoint(x: 10, y: 115)))
-view.mouseUp(with: event(.leftMouseUp, CGPoint(x: 10, y: 115)))
+let pcStart = view.pcFrameInView.map { CGPoint(x: $0.midX, y: $0.midY) } ?? .zero
+check(view.pcFrameInView.map { $0.width >= 100 && view.bounds.contains($0) } == true, "the PC block is readable and inside the map")
+view.mouseDown(with: event(.leftMouseDown, pcStart))
+view.mouseDragged(with: event(.leftMouseDragged, CGPoint(x: 10, y: pcStart.y)))
+view.mouseUp(with: event(.leftMouseUp, CGPoint(x: 10, y: pcStart.y)))
 check(edges == [.left] && view.pcEdge == .left, "dragging the PC chooses the crossing edge")
 view.pcEdge = .right; edges.removeAll()
 // The iMac sits left of the Air: drag from its centre far below the Air.
-let imacPoint = CGPoint(x: 194, y: 116)
+let imacFrame = view.frameInView(3) ?? .zero, airFrame = view.frameInView(1) ?? .zero
+let imacPoint = CGPoint(x: imacFrame.midX, y: imacFrame.midY)
+let below = CGPoint(x: airFrame.midX, y: min(view.bounds.maxY - 2, airFrame.maxY + imacFrame.height / 2 + 4))
 view.mouseDown(with: event(.leftMouseDown, imacPoint))
-view.mouseDragged(with: event(.leftMouseDragged, CGPoint(x: 290, y: 200)))
-view.mouseUp(with: event(.leftMouseUp, CGPoint(x: 290, y: 200)))
+view.mouseDragged(with: event(.leftMouseDragged, below))
+view.mouseUp(with: event(.leftMouseUp, below))
 check(moved.count == 1 && moved[0].0 == 3, "dragging a screen moves that screen")
 if let m = moved.first {
     let r = CGRect(origin: m.1, size: imac.size)
@@ -45,10 +49,23 @@ if let m = moved.first {
 }
 // The main screen never moves.
 let before = moved.count
-view.mouseDown(with: event(.leftMouseDown, CGPoint(x: 250, y: 120)))
-view.mouseDragged(with: event(.leftMouseDragged, CGPoint(x: 300, y: 150)))
-view.mouseUp(with: event(.leftMouseUp, CGPoint(x: 300, y: 150)))
+view.mouseDown(with: event(.leftMouseDown, CGPoint(x: airFrame.midX, y: airFrame.midY)))
+view.mouseDragged(with: event(.leftMouseDragged, CGPoint(x: airFrame.midX + 50, y: airFrame.midY + 30)))
+view.mouseUp(with: event(.leftMouseUp, CGPoint(x: airFrame.midX + 50, y: airFrame.midY + 30)))
 check(moved.count == before, "the main screen stays fixed")
+// Real screens: a hidden one (the canvas of a corrected monitor) is not drawn.
+let real = DeviceMapView.liveScreens()
+if let first = real.first {
+    DeviceMapView.hiddenDisplays = { [first.id] }
+    check(!DeviceMapView.liveScreens().contains { $0.id == first.id }, "a hidden screen is left out of the map")
+    DeviceMapView.hiddenDisplays = { [] }
+}
+check(!real.contains { CGDisplayMirrorsDisplay($0.id) != kCGNullDirectDisplay }, "mirroring screens are not drawn on top of others")
+// Monitor HDMI: the bigger desktop keeps the edge where the monitor touched the Mac.
+let macScreen = CGRect(x: 0, y: 0, width: 1710, height: 1107), big = CGSize(width: 2560, height: 2048)
+check(AppController.anchoredOrigin(monitor: CGRect(x: 42, y: -1024, width: 1280, height: 1024), main: macScreen, size: big) == CGPoint(x: 42, y: -2048), "a monitor above stays above (its bottom edge on the Mac's top edge)")
+check(AppController.anchoredOrigin(monitor: CGRect(x: -1920, y: 0, width: 1920, height: 1080), main: macScreen, size: big) == CGPoint(x: -2560, y: 0), "a monitor on the left stays on the left")
+check(AppController.anchoredOrigin(monitor: CGRect(x: 1710, y: 0, width: 1920, height: 1080), main: macScreen, size: big) == CGPoint(x: 1710, y: 0), "a monitor on the right keeps its corner")
 // Preview image
 view.display()
 if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {

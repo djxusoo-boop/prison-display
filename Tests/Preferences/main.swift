@@ -93,6 +93,8 @@ precondition(hd.allSatisfy { $0.width * $0.height <= 3840 * 2160 && $0.width % 8
 let ultrawide = DisplayResolutionProfile.local(nativeWidth: 2560, nativeHeight: 1080)
 precondition(ultrawide.allSatisfy { abs(Double($0.width) / Double($0.height) - 2560.0 / 1080.0) < 0.01 && $0.width * $0.height <= 3840 * 2160 })
 precondition(DisplayResolutionProfile.local(nativeWidth: 0, nativeHeight: 0) == DisplayResolutionProfile.local)
+// The smallest choice is only a little more space (×1,1), never a huge jump.
+precondition(hd.first?.width == 2112 && hd.first!.width < 2400)
 precondition(Set(DisplayResolutionProfile.menuOrder) == Set(DisplayResolutionProfile.all.indices))
 precondition(DisplayResolutionProfile.all.allSatisfy { $0.width <= 3840 && $0.height <= 2160 && $0.width % 8 == 0 })
 print("PASS: desktop scales, HDMI scales by monitor shape and sent-image limits")

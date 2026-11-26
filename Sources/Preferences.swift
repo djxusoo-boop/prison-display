@@ -82,7 +82,7 @@ struct DisplayResolutionProfile: Equatable {
     ]
     // Exact fractions keep common sizes round (1920 × 4/3 = 2560).
     static let localScales: [(numerator: Int, denominator: Int, label: String)] = [
-        (5, 4, "1,25"), (4, 3, "1,33"), (3, 2, "1,5"), (5, 3, "1,67"), (7, 4, "1,75"),
+        (11, 10, "1,1"), (6, 5, "1,2"), (5, 4, "1,25"), (4, 3, "1,33"), (3, 2, "1,5"), (5, 3, "1,67"), (7, 4, "1,75"),
         (2, 1, "2"), (9, 4, "2,25"), (5, 2, "2,5"), (8, 3, "2,67"), (3, 1, "3")
     ]
     // More desktop than the monitor shows, keeping its exact shape so it fills
@@ -208,6 +208,12 @@ enum ScreenCaptureAccess {
     static func permitted(systemMajor: Int, query: (() -> Bool)?) -> Bool {
         if systemMajor < 11 { return true }
         return query?() ?? false
+    }
+    // Asks macOS for the permission: it shows its own window and puts the app
+    // in the Screen Recording list, where the user switches it on.
+    static func request() {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGRequestScreenCaptureAccess") else { return }
+        _ = unsafeBitCast(symbol, to: (@convention(c) () -> Bool).self)()
     }
 }
 

@@ -40,9 +40,22 @@ enum PhysicalDisplays {
         online().filter { CGDisplayIsBuiltin($0) == 0 && CGDisplayVendorNumber($0) != 0xA1DE }
     }
     private static var blackTimer: Timer?
+    // When the app opens every monitor is on again: one left switched off (the
+    // app quit, crashed or was updated meanwhile) goes back to being its own
+    // screen with its own colours. Nothing is switched off by itself.
+    static func restoreAtLaunch() {
+        let saved = off
+        guard !saved.isEmpty else { return }
+        defaults.removeObject(forKey: key)
+        for id in externals() where saved[stableKey(id)] != nil && CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay { mirror(id, of: kCGNullDirectDisplay) }
+        CGDisplayRestoreColorSyncSettings()
+        LocalBrightness.reapplySoftware()
+    }
     // Keep switched-off monitors black (colour profiles can reload the table).
     static func enforce() {
         for id in externals() where isOff(id) {
+            // The screen with the menu bar is never blacked out: everything would be lost.
+            if id == CGMainDisplayID() { remember(id, name: nil); continue }
             if CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay { mirror(id, of: CGMainDisplayID()) }
             CGSetDisplayTransferByFormula(id, 0, 0, 1, 0, 0, 1, 0, 0, 1)
         }
@@ -61,6 +74,7 @@ enum PhysicalDisplays {
     // Main thread. Returns an error message, or nil once the change is real.
     @discardableResult static func setEnabled(_ id: CGDirectDisplayID, _ on: Bool, name: String) -> String? {
         guard CGDisplayIsBuiltin(id) == 0, CGDisplayVendorNumber(id) != 0xA1DE else { return "La pantalla del Mac no se apaga: desde ella controlas todo." }
+        guard on || id != CGMainDisplayID() else { return "Es la pantalla principal (la de la barra de menús): no se apaga desde aquí." }
         if !on {
             remember(id, name: name)
             guard mirror(id, of: CGMainDisplayID()) else { remember(id, name: nil); return "macOS no aceptó el cambio." }
@@ -83,6 +97,110 @@ enum PhysicalDisplays {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
         return true
+    }
+}
+
+// Screen sizes that macOS changes by itself. Switching a monitor on, off or to
+// mirroring makes macOS pick other sizes (the Mac's screen at 1280 × 828 to
+// match a 1280 × 1024 TV, the TV at 1920 × 1080). A size chosen while the
+// screens are stable is the user's: it is kept and put back after each change.
+enum ModeKeeper {
+    static var defaults = UserDefaults.standard
+    static let builtinKey = "PrisonDisplay.correction.builtinMode"
+    // Monitors whose size is kept too (the corrected one): its defaults key, or nil.
+    static var monitorKey: (CGDirectDisplayID) -> String? = { _ in nil }
+    static var onMonitorSaved: (CGDirectDisplayID) -> Void = { _ in }
+    static let settle: TimeInterval = 10
+    private static var topology = ""
+    private static var lastChange = Date.distantPast
+    private static var sizes: [CGDirectDisplayID: [Int]] = [:]
+    private static var started = false
+
+    // Only while a corrected monitor is connected (the TV of «Corregir
+    // monitor»): otherwise no screen is ever touched, its own or external.
+    private static var watching: Bool {
+        online().contains { CGDisplayIsBuiltin($0) == 0 && CGDisplayVendorNumber($0) != 0xA1DE && monitorKey($0) != nil }
+    }
+    // No screen has appeared, gone or mirrored for a few seconds.
+    static var isStable: Bool { started && currentTopology() == topology && Date().timeIntervalSince(lastChange) > settle }
+
+    static func start() {
+        guard !started else { return }
+        started = true; topology = currentTopology(); sizes = currentSizes(); lastChange = Date()
+        if watching, defaults.array(forKey: builtinKey) == nil, let id = builtin(), CGDisplayIsInMirrorSet(id) == 0, let size = sizes[id] { defaults.set(size, forKey: builtinKey) }
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in changed() }
+    }
+    static func changed() {
+        let now = currentTopology(), next = currentSizes()
+        defer { sizes = next }
+        guard watching else { topology = now; return }
+        if now != topology {
+            // macOS is rearranging: its new sizes are not the user's. Put them back.
+            topology = now; lastChange = Date()
+            for delay in [1.5, 4.0, 8.0] { DispatchQueue.main.asyncAfter(deadline: .now() + delay) { restore() } }
+            return
+        }
+        // macOS may still apply sizes it remembers for this set of screens a few
+        // seconds later: undo them as soon as they appear.
+        guard Date().timeIntervalSince(lastChange) > settle else {
+            if next.contains(where: { id, size in sizes[id] != size && wanted(id).map { $0 != size } == true }) {
+                pendingRestore?.cancel()
+                let work = DispatchWorkItem { restore() }
+                pendingRestore = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+            }
+            return
+        }
+        for (id, size) in next where sizes[id] != nil && sizes[id] != size && CGDisplayIsInMirrorSet(id) == 0 {
+            guard let key = CGDisplayIsBuiltin(id) != 0 ? builtinKey : monitorKey(id), defaults.array(forKey: key) as? [Int] != size else { continue }
+            defaults.set(size, forKey: key)
+            if CGDisplayIsBuiltin(id) == 0 { onMonitorSaved(id) }
+        }
+    }
+    // The Mac's own screen size before a correction starts for the first time on
+    // this Mac: the one to keep if macOS changes it when the monitor switches.
+    static func noteBuiltinIfMissing() {
+        guard defaults.array(forKey: builtinKey) == nil, let id = builtin(), CGDisplayIsInMirrorSet(id) == 0, let mode = CGDisplayCopyDisplayMode(id) else { return }
+        defaults.set([mode.width, mode.height], forKey: builtinKey)
+    }
+    static func restore() {
+        guard watching else { return }
+        for id in online() {
+            guard let size = wanted(id) else { continue }
+            setMode(id, width: size[0], height: size[1])
+        }
+    }
+    private static var pendingRestore: DispatchWorkItem?
+    // The size kept for that screen, if any (not while it mirrors or is mirrored).
+    private static func wanted(_ id: CGDirectDisplayID) -> [Int]? {
+        guard CGDisplayIsInMirrorSet(id) == 0, CGDisplayVendorNumber(id) != 0xA1DE,
+              let key = CGDisplayIsBuiltin(id) != 0 ? builtinKey : monitorKey(id),
+              let size = defaults.array(forKey: key) as? [Int], size.count == 2 else { return nil }
+        return size
+    }
+    // The sharpest mode of that size (Retina on the Mac's screen), 60 Hz when offered.
+    static func setMode(_ id: CGDirectDisplayID, width: Int, height: Int) {
+        if let current = CGDisplayCopyDisplayMode(id), current.width == width, current.height == height { return }
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let modes = ((CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []).filter { $0.width == width && $0.height == height && $0.isUsableForDesktopGUI() }
+        guard let mode = modes.max(by: { ($0.pixelWidth, Int($0.refreshRate) == 60 ? 1 : 0) < ($1.pixelWidth, Int($1.refreshRate) == 60 ? 1 : 0) }) else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
+        CGCompleteDisplayConfiguration(config, .forSession)
+    }
+    private static func online() -> [CGDirectDisplayID] {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32); var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(32, &ids, &count) == .success else { return [] }
+        return Array(ids.prefix(Int(count)))
+    }
+    private static func builtin() -> CGDirectDisplayID? { online().first { CGDisplayIsBuiltin($0) != 0 } }
+    private static func currentTopology() -> String {
+        online().sorted().map { "\($0)>\(CGDisplayMirrorsDisplay($0))" }.joined(separator: ",")
+    }
+    private static func currentSizes() -> [CGDirectDisplayID: [Int]] {
+        var result: [CGDirectDisplayID: [Int]] = [:]
+        for id in online() { if let mode = CGDisplayCopyDisplayMode(id) { result[id] = [mode.width, mode.height] } }
+        return result
     }
 }
 

@@ -44,6 +44,22 @@ let prisonSecondaryText = NSColor(calibratedWhite: 0.74, alpha: 1)
 var virtualDisplaySupported: Bool {
     ["CGVirtualDisplay", "CGVirtualDisplayDescriptor", "CGVirtualDisplayMode", "CGVirtualDisplaySettings"].allSatisfy { NSClassFromString($0) != nil }
 }
+// A remembered window place may be on a screen that is gone, moved or smaller
+// now (a monitor unplugged or changed): the window then opened where nobody
+// could see it. Bring it to the middle of the main screen when too little of
+// it, or its title bar, is visible.
+func prisonKeepOnScreen(_ window: NSWindow) {
+    guard !window.styleMask.contains(.fullScreen) else { return }
+    let frame = window.frame
+    let seen = NSScreen.screens.contains { screen in
+        let part = screen.visibleFrame.intersection(frame)
+        return part.width >= min(300, frame.width) && part.height >= min(200, frame.height) && screen.visibleFrame.contains(NSPoint(x: frame.midX, y: frame.maxY - 10))
+    }
+    guard !seen, let main = NSScreen.screens.first else { return }
+    let area = main.visibleFrame
+    let size = NSSize(width: min(frame.width, area.width), height: min(frame.height, area.height))
+    window.setFrame(NSRect(x: area.midX - size.width / 2, y: area.midY - size.height / 2, width: size.width, height: size.height), display: true)
+}
 // Draw inside the control bounds even when a device name or translation is long.
 func prisonButtonTitle(_ title: String, bounds: NSRect, font: NSFont, color: NSColor, alignment: NSTextAlignment = .center) {
     NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
@@ -1368,7 +1384,12 @@ final class DeviceMapView: NSView {
     struct Screen: Equatable { let id: CGDirectDisplayID; let bounds: CGRect; let title: String; let detail: String; let main: Bool; let virtual: Bool }
     var screens: () -> [Screen] = DeviceMapView.liveScreens
     var pcName: String? { didSet { needsDisplay = true } }
+    var pcConnected = false { didSet { needsDisplay = true } }
     var pcEdge = DesktopEdge.right { didSet { needsDisplay = true } }
+    // Screens that are not part of the desktop (the monitor under a corrected
+    // desktop) and the name shown for that corrected desktop.
+    static var hiddenDisplays: () -> Set<CGDirectDisplayID> = { [] }
+    static var correctedTitle: () -> String = { "Escritorio corregido" }
     var onMoveScreen: (CGDirectDisplayID, CGPoint) -> Void = DeviceMapView.applyOrigin
     var onPCEdge: (DesktopEdge) -> Void = { _ in }
     var screenNames: (Screen) -> String? = { _ in nil }
@@ -1395,15 +1416,22 @@ final class DeviceMapView: NSView {
         guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetActiveDisplayList(count, &ids, &count) == .success else { return [] }
+        let hidden = hiddenDisplays()
         return ids.prefix(Int(count)).compactMap { id in
+            // A mirroring screen shows another one and has no place of its own.
+            guard !hidden.contains(id), CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay else { return nil }
             let b = CGDisplayBounds(id); guard !b.isEmpty else { return nil }
             let virtual = CGDisplayVendorNumber(id) == 0xA1DE, product = CGDisplayModelNumber(id)
             let title: String
             if CGDisplayIsBuiltin(id) != 0 { title = "Este Mac" }
             else if virtual && product == 1 { title = DeviceMapView.screenLabel(0) }
             else if virtual && product == 2 { title = DeviceMapView.screenLabel(1) }
+            else if virtual && product & 0xFF00 == 0x5300 { title = correctedTitle() }
             else if virtual { title = "HDMI ampliado" }
-            else { title = "Monitor" }
+            else { title = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }.map { screen -> String in
+                if #available(macOS 10.15, *) { return screen.localizedName }
+                return "Monitor"
+            } ?? "Monitor" }
             return Screen(id: id, bounds: b, title: title, detail: "\(Int(b.width)) × \(Int(b.height))", main: CGDisplayIsMain(id) != 0, virtual: virtual)
         }
     }
@@ -1419,8 +1447,12 @@ final class DeviceMapView: NSView {
     private var union: CGRect { current.reduce(CGRect.null) { $0.union($1.bounds) } }
     private func transform() -> (scale: CGFloat, origin: CGPoint) {
         let u = union.isNull ? CGRect(x: 0, y: 0, width: 1920, height: 1080) : union
-        let pcSpace: CGFloat = pcName == nil ? 0 : max(u.width, u.height) * 0.28
-        let world = u.insetBy(dx: -max(pcSpace, u.width * 0.35), dy: -max(pcSpace * 0.6, u.height * 0.3))
+        // A small margin all round (room to drop a screen beside another) and
+        // the PC's room only on its side: the screens fill as much as they can.
+        let side = max(u.width, u.height), margin = side * 0.12, room = pcName == nil ? margin : side * 0.5
+        let left = pcEdge == .left ? room : margin, right = pcEdge == .right ? room : margin
+        let top = pcEdge == .above ? room : margin, bottom = pcEdge == .below ? room : margin
+        let world = CGRect(x: u.minX - left, y: u.minY - top, width: u.width + left + right, height: u.height + top + bottom)
         let area = bounds.insetBy(dx: 16, dy: 16)
         let scale = min(area.width / world.width, area.height / world.height)
         let size = CGSize(width: world.width * scale, height: world.height * scale)
@@ -1429,17 +1461,19 @@ final class DeviceMapView: NSView {
     private func viewRect(_ r: CGRect) -> CGRect {
         let t = transform(); return CGRect(x: t.origin.x + r.minX * t.scale, y: t.origin.y + r.minY * t.scale, width: r.width * t.scale, height: r.height * t.scale)
     }
+    // Where a screen and the PC are drawn (view points), for tests and tools.
+    func frameInView(_ id: CGDirectDisplayID) -> CGRect? { current.first { $0.id == id }.map { viewRect($0.bounds) } }
+    var pcFrameInView: CGRect? { pcRect() }
+    // In view points, never so small that its name cannot be read.
     private func pcRect() -> CGRect? {
         guard pcName != nil, !union.isNull else { return nil }
-        let u = union, w = max(u.width, u.height) * 0.22, h = w * 0.62, gap = w * 0.08
-        let r: CGRect
+        let u = viewRect(union), w = max(110, max(u.width, u.height) * 0.3), h = max(54, w * 0.5), gap: CGFloat = 10
         switch pcEdge {
-        case .right: r = CGRect(x: u.maxX + gap, y: u.midY - h / 2, width: w, height: h)
-        case .left: r = CGRect(x: u.minX - gap - w, y: u.midY - h / 2, width: w, height: h)
-        case .above: r = CGRect(x: u.midX - w / 2, y: u.minY - gap - h, width: w, height: h)
-        case .below: r = CGRect(x: u.midX - w / 2, y: u.maxY + gap, width: w, height: h)
+        case .right: return CGRect(x: u.maxX + gap, y: u.midY - h / 2, width: w, height: h)
+        case .left: return CGRect(x: u.minX - gap - w, y: u.midY - h / 2, width: w, height: h)
+        case .above: return CGRect(x: u.midX - w / 2, y: u.minY - gap - h, width: w, height: h)
+        case .below: return CGRect(x: u.midX - w / 2, y: u.maxY + gap, width: w, height: h)
         }
-        return viewRect(r)
     }
     // Place a moved screen against the nearest edge of another one.
     static func snap(_ moving: CGRect, against others: [CGRect]) -> CGPoint {
@@ -1469,7 +1503,7 @@ final class DeviceMapView: NSView {
         }
         if var r = pcRect(), let name = pcName {
             if let drag = dragging, drag.pc, let p = dragPoint { r.origin = CGPoint(x: p.x - drag.offset.x, y: p.y - drag.offset.y) }
-            drawBox(r, title: name, detail: "PC con Windows", accent: NSColor(calibratedRed: 0.10, green: 0.45, blue: 0.75, alpha: 1), menuBar: false)
+            drawBox(r, title: name, detail: pcConnected ? "PC con Windows" : "PC · sin conectar", accent: NSColor(calibratedRed: 0.10, green: 0.45, blue: 0.75, alpha: 1), menuBar: false)
         }
     }
     private func drawBox(_ r: CGRect, title: String, detail: String, accent: NSColor, menuBar: Bool) {
@@ -1924,8 +1958,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var localProfiles: [DisplayResolutionProfile] = []
     private var localVirtual: ADVirtualScreen?
     var localVirtualActive: Bool { localVirtual != nil }
+    var localPhysicalID: CGDirectDisplayID { localPhysicalDisplay }
+    // Why a monitor cannot be used here now (another tool draws on it), or nil.
+    var localBusy: (CGDirectDisplayID) -> String? = { _ in nil }
+    private var localScreensObserver: NSObjectProtocol?
+    private var localDisplayPending: DispatchWorkItem?
     private var localPhysicalDisplay: CGDirectDisplayID = 0
     private var localPhysicalOrigin = CGPoint.zero
+    private var localPhysicalMode: CGDisplayMode?
     var connectionLink: ConnectionLink?
     let copyLink = PrisonSecondaryButton(title: "Copiar enlace de conexión", target: nil, action: nil)
     #if UNIFIED && !LEGACY
@@ -2073,10 +2113,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             map.addArrangedSubview(deviceMap)
             deviceMap.translatesAutoresizingMaskIntoConstraints = false
             deviceMap.widthAnchor.constraint(equalTo: map.widthAnchor).isActive = true
-            deviceMap.heightAnchor.constraint(equalToConstant: 300).isActive = true
+            deviceMap.heightAnchor.constraint(equalToConstant: 380).isActive = true
             addText("Así están colocadas tus pantallas y tu PC. Arrastra una pantalla para pegarla a otra: el ratón pasará por ese borde. Arrastra el PC al lado por el que quieres cruzar a él.", to: map)
             let local = card("MONITOR HDMI CON MÁS ESPACIO", in: hdmiRoot)
-            addText("1. Conecta el monitor y pulsa Actualizar.  2. Elige cuánto espacio quieres.  3. Crear y mostrar. Para volver a la normalidad, Detener.", to: local)
+            addText("1. Conecta el monitor (HDMI, Thunderbolt o USB-C).  2. Elige cuánto espacio quieres.  3. Crear y mostrar. Para volver a la normalidad, Detener.", to: local)
             localDisplay.target = self; localDisplay.action = #selector(localMonitorChanged)
             localResolution.target = self; localResolution.action = #selector(localResolutionChanged)
             row("Monitor", localDisplay, in: local)
@@ -2089,8 +2129,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             localStatus.setContentCompressionResistancePriority(.required, for: .vertical)
             local.addArrangedSubview(localStatus)
             localStatus.widthAnchor.constraint(equalTo: local.widthAnchor).isActive = true
-            addText("El monitor muestra reducido un escritorio más grande que su resolución. No añade píxeles: el texto se ve más pequeño, pero caben más ventanas. Solo se ofrecen tamaños que el Mac reduce por hardware, para que el ratón vaya fluido. Si usas BetterDisplay u otra app parecida con ese monitor, desactívala antes.", to: local)
+            addText("El monitor muestra reducido un escritorio más grande que el que ves ahora. No añade píxeles: el texto se ve más pequeño, pero caben más ventanas. En los Mac con chip Apple se reduce por hardware y el ratón va fluido; en los Mac Intel, por software, y el ratón puede ir algo menos suave con los tamaños grandes. Si usas BetterDisplay u otra app parecida con ese monitor, desactívala antes.", to: local)
+            if !CommandLine.arguments.contains("--layout-preview") { Self.restoreMonitorAfterCrash() }
             refreshLocalDisplays()
+            // A monitor connected or switched on later appears by itself.
+            localScreensObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                guard let self = self, self.localVirtual == nil else { return }
+                self.localDisplayPending?.cancel()
+                let work = DispatchWorkItem { [weak self] in if self?.localVirtual == nil { self?.refreshLocalDisplays() } }
+                self.localDisplayPending = work; DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+            }
             #if UNIFIED && !LEGACY
             buildPCCard(in: hosted ? makeToolPage(&pcPage) : root)
             #endif
@@ -2650,44 +2698,104 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let best = native.max(by: area) ?? real.max(by: area) else { return nil }
         return (best.pixelWidth, best.pixelHeight)
     }
+    // The size the monitor shows now when it is a 1× mode chosen for it (a TV on
+    // VGA announces 1920 × 1080 but only looks right at 1280 × 1024); otherwise
+    // its native size (a Retina-style scaled mode is not the panel).
+    // The size the monitor looks like now (macOS «parece …»): a 4K monitor used
+    // as 1920 × 1080 starts from 1920 × 1080, not from its 3840 × 2160 pixels,
+    // so «more space» stays readable. Its pixels only if nothing better is known.
+    private func baseSize(_ id: CGDirectDisplayID) -> (Int, Int)? {
+        if let mode = CGDisplayCopyDisplayMode(id), mode.width >= 640, mode.height >= 400 { return (mode.width, mode.height) }
+        return nativeSize(id)
+    }
     private func updateLocalResolutions() {
         let index = localDisplay.indexOfSelectedItem
-        let native = localDisplayIDs.indices.contains(index) ? nativeSize(localDisplayIDs[index]) : nil
-        localProfiles = native.map { DisplayResolutionProfile.local(nativeWidth: $0.0, nativeHeight: $0.1) } ?? DisplayResolutionProfile.local
+        let native = localDisplayIDs.indices.contains(index) ? baseSize(localDisplayIDs[index]) : nil
+        // Without a monitor there is nothing to offer (no oversized default).
+        localProfiles = localDisplayIDs.indices.contains(index) ? (native.map { DisplayResolutionProfile.local(nativeWidth: $0.0, nativeHeight: $0.1) } ?? DisplayResolutionProfile.local) : []
         localResolution.removeAllItems()
         localResolution.addItems(withTitles: localProfiles.map { $0.title })
-        // Keep the saved size if this monitor offers it; otherwise twice the
-        // space (×2), the most legible large choice; else the largest.
+        if localProfiles.isEmpty { localResolution.addItem(withTitle: "Conecta un monitor") }
+        // Keep the saved size if this monitor offers it; otherwise the smallest:
+        // a little more space first, more only if the user asks for it.
         let saved = LocalVirtualDisplayPreferences().size
-        let choice = localProfiles.firstIndex(where: { "\($0.width)x\($0.height)" == saved })
-            ?? native.flatMap { size in localProfiles.firstIndex(where: { $0.width == (size.0 * 2) & ~7 }) }
-            ?? localProfiles.count - 1
+        let choice = localProfiles.firstIndex(where: { "\($0.width)x\($0.height)" == saved }) ?? 0
         localResolution.selectItem(at: choice)
         if let size = native, localVirtual == nil, !localProfiles.isEmpty {
-            localStatus.stringValue = "Monitor de \(size.0) × \(size.1). Elige cuánto espacio quieres: ×2 es el doble de ancho y alto."
+            localStatus.stringValue = "Monitor de \(size.0) × \(size.1). Elige cuánto espacio quieres: ×1,1 es solo un poco más; ×2, el doble de ancho y alto."
         }
     }
-    @objc func localMonitorChanged() { updateLocalResolutions() }
+    @objc func localMonitorChanged() { refreshLocalDisplays() }
     @objc func localResolutionChanged() {
         guard localProfiles.indices.contains(localResolution.indexOfSelectedItem) else { return }
         let profile = localProfiles[localResolution.indexOfSelectedItem]
         var saved = LocalVirtualDisplayPreferences(); saved.size = "\(profile.width)x\(profile.height)"; saved.save()
+        // A new size takes effect now: running, the desktop is made again at it.
+        if localVirtual != nil {
+            stopLocalVirtualDisplay(); startLocalVirtualDisplay()
+        } else {
+            localStatus.stringValue = "\(profile.width) × \(profile.height) elegido. Pulsa Crear y mostrar para verlo en el monitor."
+            localStatusHold = Date().addingTimeInterval(8)
+        }
     }
+    // Where a bigger desktop goes so it touches the Mac's screen by the same edge
+    // as the monitor did: above keeps its bottom edge, left keeps its right edge.
+    static func anchoredOrigin(monitor: CGRect, main: CGRect, size: CGSize) -> CGPoint {
+        if monitor.maxY <= main.minY { return CGPoint(x: monitor.minX, y: monitor.maxY - size.height) }
+        if monitor.maxX <= main.minX { return CGPoint(x: monitor.maxX - size.width, y: monitor.minY) }
+        return monitor.origin
+    }
+    // The monitor's own size while the bigger desktop is on, so that a crash or
+    // a forced quit cannot leave it changed: the next launch puts it back.
+    static let monitorModeKey = "PrisonDisplay.localVirtual.monitorMode"
+    private static func monitorKey(_ id: CGDirectDisplayID) -> String { String(format: "%x-%x-%x", CGDisplayVendorNumber(id), CGDisplayModelNumber(id), CGDisplaySerialNumber(id)) }
+    static func rememberMonitorMode(_ id: CGDirectDisplayID, _ mode: CGDisplayMode?) {
+        guard let mode = mode else { return }
+        UserDefaults.standard.set(["monitor": monitorKey(id), "width": mode.width, "height": mode.height, "pixelWidth": mode.pixelWidth, "pixelHeight": mode.pixelHeight, "refresh": Int(mode.refreshRate.rounded())] as [String: Any], forKey: monitorModeKey)
+    }
+    static func restoreMonitorAfterCrash() {
+        guard let saved = UserDefaults.standard.dictionary(forKey: monitorModeKey) else { return }
+        UserDefaults.standard.removeObject(forKey: monitorModeKey)
+        var count: UInt32 = 0
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+        guard CGGetOnlineDisplayList(32, &ids, &count) == .success,
+              let id = ids.prefix(Int(count)).first(where: { monitorKey($0) == saved["monitor"] as? String && CGDisplayVendorNumber($0) != 0xA1DE }) else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        if CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay { CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay) }
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []
+        if let mode = modes.first(where: { $0.width == saved["width"] as? Int && $0.height == saved["height"] as? Int && $0.pixelWidth == saved["pixelWidth"] as? Int && $0.pixelHeight == saved["pixelHeight"] as? Int && Int($0.refreshRate.rounded()) == saved["refresh"] as? Int }) {
+            CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
+        }
+        CGCompleteDisplayConfiguration(config, .forSession)
+    }
+    // A mirroring monitor is not an NSScreen: keep the name it had before.
+    private var localNames: [CGDirectDisplayID: String] = [:]
+    private var localStatusHold = Date.distantPast
     private func localDisplayName(_ id: CGDirectDisplayID, number: Int) -> String {
         if #available(macOS 10.15, *), let screen = NSScreen.screens.first(where: {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
-        }) { return screen.localizedName }
-        return "Monitor externo \(number + 1)"
+        }) { localNames[id] = screen.localizedName; return screen.localizedName }
+        return localNames[id] ?? "Monitor externo \(number + 1)"
     }
-    private func configureLocalMonitor(_ target: CGDirectDisplayID, mirrorOf master: CGDirectDisplayID, restoreOrigin: CGPoint? = nil) -> Bool {
+    // One transaction: macOS takes a snapshot when it begins, so a second one
+    // started while the monitor still mirrors would put the mirror back.
+    private func configureLocalMonitor(_ target: CGDirectDisplayID, mirrorOf master: CGDirectDisplayID, restoreOrigin: CGPoint? = nil, mode: CGDisplayMode? = nil) -> Bool {
         var configuration: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&configuration) == .success else { return false }
         var valid = CGConfigureDisplayMirrorOfDisplay(configuration, target, master) == .success
         if valid, let origin = restoreOrigin {
             valid = CGConfigureDisplayOrigin(configuration, target, Int32(origin.x.rounded()), Int32(origin.y.rounded())) == .success
         }
+        if valid, let mode = mode { CGConfigureDisplayWithDisplayMode(configuration, target, mode, nil) }
         guard valid else { CGCancelDisplayConfiguration(configuration); return false }
         return CGCompleteDisplayConfiguration(configuration, .forSession) == .success
+    }
+    private func waitForUnmirror(_ target: CGDirectDisplayID, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while CGDisplayMirrorsDisplay(target) != kCGNullDirectDisplay && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        return CGDisplayMirrorsDisplay(target) == kCGNullDirectDisplay
     }
     private func waitForLocalDisplay(_ id: CGDirectDisplayID, width: Int, height: Int, timeout: TimeInterval = 5) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
@@ -2697,16 +2805,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         while !ready() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
         return ready()
     }
+    private func waitForMirror(_ target: CGDirectDisplayID, of master: CGDirectDisplayID, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while CGDisplayMirrorsDisplay(target) != master && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        return CGDisplayMirrorsDisplay(target) == master
+    }
     private func waitForHardwareMirror(_ target: CGDirectDisplayID, of master: CGDirectDisplayID, timeout: TimeInterval = 3) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         func ready() -> Bool { CGDisplayMirrorsDisplay(target) == master && CGDisplayIsInHWMirrorSet(target) != 0 }
         while !ready() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
         return ready()
     }
+    // From the live list: CGDisplayIsOnline keeps answering yes for a while
+    // after a virtual display is gone (the wait used to last its whole 15 s).
+    private func inOnlineList(_ id: CGDirectDisplayID) -> Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32); var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(32, &ids, &count) == .success else { return CGDisplayIsOnline(id) != 0 }
+        return ids.prefix(Int(count)).contains(id)
+    }
     private func waitForLocalDisplayRemoval(_ id: CGDirectDisplayID, timeout: TimeInterval = 15) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while CGDisplayIsOnline(id) != 0 && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
-        return CGDisplayIsOnline(id) == 0
+        while inOnlineList(id) && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        return !inOnlineList(id)
     }
     #if UNIFIED && !LEGACY
     private func buildPCCard(in root: NSStackView) {
@@ -2744,6 +2864,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         link.onClipboard = { data in ClipboardSync.shared.receive(data, from: pcClipboard) }
         link.onStatus = { [weak self] text in self?.pcStatus.stringValue = text }
         link.onConnected = { [weak self] name in
+            self?.deviceMap.pcConnected = name != nil
             self?.pcConnect.title = name == nil ? "Conectar" : "Conectado · \(name!)"
             if let name = name { self?.deviceMap.pcName = name; UserDefaults.standard.set(name, forKey: "PrisonDisplay.pc.name") }
         }
@@ -2756,7 +2877,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.global(qos: .userInitiated).async {
                 let stored = PCLinkSettings.load()
                 DispatchQueue.main.async { [weak self] in
-                    guard let self = self, !stored.key.isEmpty, let endpoint = try? PCLinkSettings.endpoint(stored.host) else { return }
+                    guard let self = self else { return }
+                    // Without its key the PC cannot be reached: say so instead of waiting in silence.
+                    guard !stored.key.isEmpty else {
+                        self.pcKey.placeholderString = "Clave de 32 caracteres que muestra el PC"
+                        self.pcStatus.stringValue = "Este Mac no tiene guardada la clave del PC. Abre PRISON DISPLAY en el PC y pulsa Buscar y emparejar."
+                        return
+                    }
+                    guard let endpoint = try? PCLinkSettings.endpoint(stored.host) else { self.pcStatus.stringValue = "La dirección guardada del PC no es válida. Pulsa Buscar y emparejar."; return }
                     do { try link.connect(host: endpoint.0, port: endpoint.1, key: stored.key) } catch { self.pcStatus.stringValue = "\(error)" }
                 }
             }
@@ -2814,14 +2942,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings.key = try normalizedKey(settings.key)
             WindowsLink.shared.bridge.edge = DesktopEdge(rawValue: settings.edge) ?? .right
             try WindowsLink.shared.connect(host: endpoint.0, port: endpoint.1, key: settings.key)
-            settings.enabled = true; settings.save()
-            pcKey.stringValue = ""; pcKey.placeholderString = "Guardada en el Llavero"; pcDisconnect.isEnabled = true
+            settings.enabled = true
+            let kept = settings.save()
+            pcKey.stringValue = ""; pcKey.placeholderString = kept ? "Guardada en el Llavero" : "No se pudo guardar: hay que emparejar de nuevo al reiniciar"; pcDisconnect.isEnabled = true
+            if !kept { pcStatus.stringValue = "Conectando… Ojo: macOS no dejó guardar la clave en el Llavero; al reiniciar tendrás que emparejar otra vez." }
         } catch { pcStatus.stringValue = "\(error)" }
     }
     @objc func disconnectPC() {
         WindowsLink.shared.disconnect()
         var settings = PCLinkSettings.load(readKey: false); settings.enabled = false; settings.save()
-        deviceMap.pcName = nil
+        deviceMap.pcName = nil; deviceMap.pcConnected = false
         pcDisconnect.isEnabled = false; pcStatus.stringValue = "Desconectado del PC. El ratón y el teclado se quedan en este Mac."
     }
     @objc func changePCEdge() {
@@ -2838,24 +2968,30 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             var online = [CGDirectDisplayID](repeating: 0, count: Int(count))
             if CGGetOnlineDisplayList(count, &online, &count) == .success {
                 ids = Array(online.prefix(Int(count))).filter {
-                    $0 != CGMainDisplayID() && CGDisplayIsBuiltin($0) == 0 && CGDisplayVendorNumber($0) != 0xA1DE && CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay
+                    $0 != CGMainDisplayID() && CGDisplayIsBuiltin($0) == 0 && CGDisplayVendorNumber($0) != 0xA1DE && (CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay || $0 == localPhysicalDisplay)
                 }
             }
         }
         localDisplayIDs = ids
         localDisplay.removeAllItems()
         for (index, id) in ids.enumerated() { localDisplay.addItem(withTitle: localDisplayName(id, number: index)) }
+        if ids.isEmpty { localDisplay.addItem(withTitle: "Ningún monitor conectado") }
         if ids.indices.contains(previous) { localDisplay.selectItem(at: previous) }
         let active = localVirtual != nil
+        if active, let index = ids.firstIndex(of: localPhysicalDisplay) { localDisplay.selectItem(at: index) }
         if !active { updateLocalResolutions() }
+        let busy = !active && ids.indices.contains(localDisplay.indexOfSelectedItem) ? localBusy(ids[localDisplay.indexOfSelectedItem]) : nil
         localDisplay.isEnabled = !active && !ids.isEmpty
-        localResolution.isEnabled = !active
+        localResolution.isEnabled = busy == nil && !localProfiles.isEmpty
         localRefresh.isEnabled = !active
-        localStart.isEnabled = !active && !ids.isEmpty && virtualDisplaySupported
+        localStart.isEnabled = !active && !ids.isEmpty && virtualDisplaySupported && busy == nil
         localStop.isEnabled = active
-        if !active {
+        // A result just shown (Detener, an error) stays readable for a few seconds.
+        if !active && Date() > localStatusHold {
             if !virtualDisplaySupported { localStatus.stringValue = "Este macOS no admite la pantalla virtual local." }
-            else if ids.isEmpty { localStatus.stringValue = "No hay un monitor externo ampliado disponible. Conecta el HDMI y pulsa Actualizar." }
+            else if ids.isEmpty { localStatus.stringValue = "No hay ningún monitor externo conectado (HDMI, Thunderbolt o USB-C). Al conectarlo aparecerá aquí solo." }
+            else if let busy = busy { localStatus.stringValue = busy }
+            else if let native = baseSize(ids[max(0, localDisplay.indexOfSelectedItem)]) { localStatus.stringValue = "Monitor de \(native.0) × \(native.1). Elige cuánto espacio quieres y pulsa Crear y mostrar." }
             else { localStatus.stringValue = "Preparado para crear el escritorio virtual en \(localDisplay.titleOfSelectedItem ?? "el monitor externo")." }
         }
     }
@@ -2863,49 +2999,67 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshLocalDisplays()
         guard localVirtual == nil, localDisplayIDs.indices.contains(localDisplay.indexOfSelectedItem), localProfiles.indices.contains(localResolution.indexOfSelectedItem) else { return }
         let target = localDisplayIDs[localDisplay.indexOfSelectedItem]
+        if let busy = localBusy(target) { localStatus.stringValue = busy; return }
         guard target != CGMainDisplayID(), CGDisplayIsOnline(target) != 0, CGDisplayMirrorsDisplay(target) == kCGNullDirectDisplay else {
             localStatus.stringValue = "El monitor debe estar conectado como pantalla ampliada y no puede ser la pantalla principal."
-            refreshLocalDisplays(); return
+            localStatusHold = Date().addingTimeInterval(8); refreshLocalDisplays(); return
         }
         let profile = localProfiles[localResolution.indexOfSelectedItem]
         var saved = LocalVirtualDisplayPreferences(); saved.size = "\(profile.width)x\(profile.height)"; saved.save()
         localStart.isEnabled = false; localStatus.stringValue = "Creando escritorio virtual \(profile.width) × \(profile.height)…"
-        let origin = CGDisplayBounds(target).origin
+        let origin = CGDisplayBounds(target).origin, monitorRect = CGDisplayBounds(target)
+        let monitorMode = CGDisplayCopyDisplayMode(target)
+        localPhysicalMode = monitorMode
+        var virtual: ADVirtualScreen?
+        // Any step that fails leaves the monitor exactly as it was: its own
+        // desktop, its place and its size (mirroring changes the size).
+        func undo(_ message: String) {
+            if let screen = virtual {
+                _ = configureLocalMonitor(target, mirrorOf: CGMainDisplayID())
+                let id = screen.displayID; screen.destroy(); _ = waitForLocalDisplayRemoval(id)
+            }
+            if !(configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin, mode: monitorMode) && waitForUnmirror(target)) {
+                _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
+            }
+            localPhysicalMode = nil
+            localStatus.stringValue = message
+            localStatusHold = Date().addingTimeInterval(10); refreshLocalDisplays()
+        }
         // MacBook Air counts independent external desktops. Temporarily mirror
         // the HDMI to the built-in display to free the slot that will become
         // the high-resolution virtual desktop, then point the HDMI at it.
         guard configureLocalMonitor(target, mirrorOf: CGMainDisplayID()) else {
-            localStatus.stringValue = "macOS no pudo preparar temporalmente el monitor HDMI."
-            refreshLocalDisplays(); return
+            undo("macOS no pudo preparar el monitor. No se ha cambiado nada."); return
         }
-        let virtual = ADVirtualScreen(); virtual.screenSlot = 2
+        let screen = ADVirtualScreen(); screen.screenSlot = 2
         var message: NSString?
-        guard virtual.createWidth(UInt(profile.width), height: UInt(profile.height), error: &message) else {
-            _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
-            localStatus.stringValue = message as String? ?? "No se pudo crear la pantalla virtual."
-            refreshLocalDisplays(); return
+        guard screen.createWidth(UInt(profile.width), height: UInt(profile.height), error: &message) else {
+            undo(message as String? ?? "No se pudo crear la pantalla virtual. El monitor queda como estaba."); return
         }
-        guard waitForLocalDisplay(virtual.displayID, width: profile.width, height: profile.height) else {
-            virtual.destroy(); _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
-            localStatus.stringValue = "macOS no encendió el escritorio virtual. Si estás enviando pantalla a dos Mac a la vez, detén una: este Mac solo admite dos pantallas externas a la vez (el monitor HDMI cuenta como una). Si no, prueba un tamaño menor."
-            refreshLocalDisplays(); return
+        virtual = screen
+        guard waitForLocalDisplay(screen.displayID, width: profile.width, height: profile.height) else {
+            undo("macOS no encendió el escritorio virtual. Si estás enviando pantalla a dos Mac a la vez, detén una: este Mac solo admite dos pantallas externas a la vez (el monitor cuenta como una). Si no, prueba un tamaño menor."); return
         }
-        guard configureLocalMonitor(target, mirrorOf: virtual.displayID) else {
-            virtual.destroy(); localStatus.stringValue = "macOS no pudo mostrar el escritorio virtual en ese monitor."
-            _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
-            refreshLocalDisplays(); return
+        guard configureLocalMonitor(target, mirrorOf: screen.displayID), waitForMirror(target, of: screen.displayID) else {
+            undo("macOS no pudo mostrar el escritorio virtual en ese monitor. El monitor queda como estaba."); return
         }
-        // Only a hardware mirror keeps the pointer smooth; otherwise undo it.
-        if !waitForHardwareMirror(target, of: virtual.displayID) {
-            _ = configureLocalMonitor(target, mirrorOf: CGMainDisplayID())
-            let id = virtual.displayID; virtual.destroy(); _ = waitForLocalDisplayRemoval(id)
-            _ = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin)
-            localStatus.stringValue = "\(profile.width) × \(profile.height) no se puede mostrar con fluidez en este monitor (el Mac lo haría por software y el ratón iría lento). Elige un tamaño menor."
-            refreshLocalDisplays(); return
+        // Apple silicon shows it in hardware (smooth pointer). Intel Macs only
+        // in software: it works, but the pointer may be less smooth.
+        let hardware = waitForHardwareMirror(target, of: screen.displayID, timeout: 1.5)
+        localVirtual = screen; localPhysicalDisplay = target; localPhysicalOrigin = origin
+        Self.rememberMonitorMode(target, monitorMode)
+        // The bigger desktop takes the monitor's place, so the pointer still
+        // leaves the Mac's screen by the same edge.
+        let spot = Self.anchoredOrigin(monitor: monitorRect, main: CGDisplayBounds(CGMainDisplayID()), size: CGSize(width: profile.width, height: profile.height))
+        var place: CGDisplayConfigRef?
+        if CGBeginDisplayConfiguration(&place) == .success {
+            CGConfigureDisplayOrigin(place, screen.displayID, Int32(spot.x.rounded()), Int32(spot.y.rounded()))
+            CGCompleteDisplayConfiguration(place, .forSession)
         }
-        localVirtual = virtual; localPhysicalDisplay = target; localPhysicalOrigin = origin
-        localStatus.stringValue = "Activo · \(profile.width) × \(profile.height) virtuales en \(localDisplay.titleOfSelectedItem ?? "monitor externo")."
+        let name = localDisplay.titleOfSelectedItem ?? "monitor externo"
         refreshLocalDisplays()
+        localStatus.stringValue = "Activo · \(profile.width) × \(profile.height) virtuales en \(name). Para volver a la normalidad, Detener."
+            + (hardware ? "" : "\nEste Mac lo muestra por software: si el ratón va a saltos, elige un tamaño menor.")
     }
     @objc func stopLocalVirtualDisplay() {
         guard let virtual = localVirtual else { refreshLocalDisplays(); return }
@@ -2919,10 +3073,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         virtual.destroy()
         restored = waitForLocalDisplayRemoval(virtualID) && restored
         if target != 0 {
-            restored = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin) && restored
+            // Back to its own desktop, place and size (mirroring may have changed it), all at once.
+            restored = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin, mode: localPhysicalMode) && restored
+            if !waitForUnmirror(target) {
+                restored = configureLocalMonitor(target, mirrorOf: kCGNullDirectDisplay, restoreOrigin: origin) && waitForUnmirror(target) && restored
+            }
         }
-        localStatus.stringValue = restored ? "Pantalla virtual detenida; el HDMI vuelve a ser una pantalla ampliada normal." : "La pantalla virtual se retiró. Revisa la colocación del HDMI en Ajustes de Pantallas."
+        localPhysicalMode = nil
+        UserDefaults.standard.removeObject(forKey: Self.monitorModeKey)
         refreshLocalDisplays()
+        localStatus.stringValue = restored ? "Detenido: el monitor vuelve a ser una pantalla normal, en su sitio." : "La pantalla virtual se retiró, pero el monitor no volvió del todo: revisa su colocación en Ajustes del Sistema → Pantallas."
+        localStatusHold = Date().addingTimeInterval(8)
     }
     @objc func allowMouse() {
         let allowed = AXIsProcessTrusted()
@@ -3165,6 +3326,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.title = "Pantalla recibida · PRISON DISPLAY v\(AppVersion.current)"; w.isReleasedWhenClosed = false
             w.contentView = video; w.collectionBehavior = [.fullScreenPrimary]; w.center(); w.setFrameAutosaveName("PrisonDisplay.viewer"); viewer = w; w.delegate = self
         }
+        if let viewer = viewer { prisonKeepOnScreen(viewer) }
         viewer?.makeKeyAndOrderFront(nil)
     }
     @objc func fullscreen() {

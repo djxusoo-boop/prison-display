@@ -108,6 +108,8 @@ final class BrightnessPage: NSObject {
     private var macsStack = PrisonStack()
     private var layoutKey = ""
     private var sliders: [String: (NSSlider, NSTextField)] = [:]
+    // "Todo este Mac": one per Mac with several screens, showing their average.
+    private var macSliders: [String: (NSSlider, NSTextField)] = [:]
     private var editing: [String: Date] = [:]
     private var targets: [ObjectIdentifier: String] = [:]
 
@@ -154,6 +156,11 @@ final class BrightnessPage: NSObject {
                 if let percent = panel.percent { slider.doubleValue = Double(percent); value.stringValue = "\(percent) %"; slider.isEnabled = true }
                 else { value.stringValue = "no disponible"; slider.isEnabled = false }
             }
+            let target = node.node.uuidString, levels = node.panels.compactMap { $0.percent }
+            if let (slider, value) = macSliders[target], (editing[target] ?? .distantPast) < now, !levels.isEmpty {
+                let average = levels.reduce(0, +) / levels.count
+                slider.doubleValue = Double(average); value.stringValue = "\(average) %"
+            }
         }
         if (editing["all"] ?? .distantPast) < now {
             let levels = ordered.flatMap { $0.panels.compactMap { $0.percent } }
@@ -166,7 +173,7 @@ final class BrightnessPage: NSObject {
 
     private func rebuild(_ nodes: [BrightnessNode]) {
         macsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        sliders.removeAll(); targets.removeAll()
+        sliders.removeAll(); macSliders.removeAll(); targets.removeAll()
         for node in nodes {
             let title = NSTextField(labelWithString: node.local ? "\(node.name) · este Mac" : node.name)
             title.font = .systemFont(ofSize: 14, weight: .semibold); title.textColor = .white
@@ -174,8 +181,9 @@ final class BrightnessPage: NSObject {
             if node.panels.isEmpty { text("No tiene pantallas con brillo ajustable.", in: macsStack); continue }
             if node.panels.count > 1 {
                 let slider = makeSlider(target: node.node.uuidString, label: "Todas las pantallas de \(node.name)")
-                let value = NSTextField(labelWithString: "")
+                let value = NSTextField(labelWithString: "—")
                 sliderRow("Todo este Mac", slider, value, in: macsStack)
+                macSliders[node.node.uuidString] = (slider, value)
             }
             for panel in node.panels {
                 let target = node.node.uuidString + "/" + panel.id
@@ -196,7 +204,7 @@ final class BrightnessPage: NSObject {
         guard let target = targets[ObjectIdentifier(slider)] else { return }
         let percent = Int(slider.doubleValue.rounded())
         editing[target] = Date().addingTimeInterval(1.5)
-        if let (_, value) = sliders[target] { value.stringValue = "\(percent) %" }
+        if let (_, value) = sliders[target] ?? macSliders[target] { value.stringValue = "\(percent) %" }
         // A whole-Mac slider also moves that Mac's screen sliders.
         if !target.contains("/") {
             for (key, pair) in sliders where key.hasPrefix(target + "/") { editing[key] = editing[target]; pair.0.doubleValue = Double(percent); pair.1.stringValue = "\(percent) %" }
@@ -206,7 +214,7 @@ final class BrightnessPage: NSObject {
     @objc private func changeAll() {
         let percent = Int(allSlider.doubleValue.rounded())
         editing["all"] = Date().addingTimeInterval(1.5); allValue.stringValue = "\(percent) %"
-        for (key, pair) in sliders { editing[key] = editing["all"]; pair.0.doubleValue = Double(percent); pair.1.stringValue = "\(percent) %" }
+        for (key, pair) in sliders.merging(macSliders, uniquingKeysWith: { a, _ in a }) { editing[key] = editing["all"]; pair.0.doubleValue = Double(percent); pair.1.stringValue = "\(percent) %" }
         onSet?(nil, percent)
     }
     @objc private func lowerAll() { allSlider.doubleValue = max(5, allSlider.doubleValue - 10); changeAll() }

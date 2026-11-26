@@ -24,5 +24,7 @@ for test in Preferences Startup; do
  [[ "$test" == Startup ]] && source=Sources/Startup.swift
  xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -target x86_64-apple-macosx10.13 -Xlinker -rpath -Xlinker '@executable_path/Frameworks' "$source" "Tests/$test/main.swift" -o "$out/$test"
 done
-xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -D UNIFIED "${legacy[@]}" "${common[@]}" Sources/Workspace.swift build/SendPanel.swift build/ReceivePanel.swift Tests/Live/CaptureStub.swift build/VirtualDisplay-x86_64.o Tests/Workspace/main.swift -o "$out/Workspace"
+xcrun swiftc -module-cache-path build/ModuleCache -swift-version 5 -O -D UNIFIED "${legacy[@]}" "${common[@]}" Sources/Workspace.swift Sources/WindowsLink.swift Sources/Brightness.swift Sources/OldCopies.swift Sources/Corrector.swift Sources/CorrectorSelfTest.swift Sources/DisplaysPage.swift build/SendPanel.swift build/ReceivePanel.swift Tests/Live/CaptureStub.swift build/VirtualDisplay-x86_64.o build/LegacyCapture-x86_64.o Tests/Workspace/main.swift -o "$out/Workspace"
+# CoreMedia C calls bound to CoreMedia itself, as in build.sh (macOS 10.13 and 12).
+for binary in "$out"/*(.x); do install_name_tool -change @rpath/libswiftCoreMedia.dylib /System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia "$binary" 2>/dev/null && codesign -f -s - "$binary" 2>/dev/null || true; done
 printf '%s\n' 'Intel audit binaries compiled for macOS 10.13+'

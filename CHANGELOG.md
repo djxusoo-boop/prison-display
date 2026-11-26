@@ -1,3 +1,55 @@
+## 0.4.35 · Corregir monitor en el iMac
+
+- Corregir monitor llega a los Mac Intel con macOS 12.3 o posterior (el iMac): escritorio virtual de la resolución que elijas, dibujado en el monitor (por ejemplo el de Thunderbolt) con escala, anchura, desplazamiento y márgenes. Antes la versión Intel lo dejaba fuera entero. El MacBook Pro con 10.13 sigue abriendo la app: la captura de pantalla se enlaza solo si existe.
+- Más tamaños de escritorio: 2048 × 1152, 3200 × 1800, 3840 × 2160, 1440 × 900 y 2560 × 1600.
+- En macOS 12 y 13 la captura se hace con la forma del escritorio (esas versiones añadían bandas negras) y se estira después al rectángulo corregido.
+- Si falta el permiso de Grabación de pantalla, al pulsar Empezar macOS lo pide y se abre el ajuste correcto (antes solo decía que faltaba).
+- Antes de la primera corrección se guarda el tamaño de la pantalla del Mac, para devolverlo si macOS lo cambia.
+- Pruebas: la prueba de imagen de Corregir monitor (102 comprobaciones píxel a píxel) pasa con el código Intel en un monitor de prueba.
+
+## 0.4.34 · Revisión para todos los Mac
+
+- Monitor HDMI (iMac y Mac Intel): funcionaba solo «por hardware», algo que en los Mac Intel no existe, así que siempre se deshacía y pedía «un tamaño menor». Ahora en Intel se usa por software (con un aviso por si el ratón no va fluido).
+- Monitor HDMI: si algo falla al crear el escritorio grande, el monitor vuelve a su sitio y a su resolución (antes se quedaba cambiado de tamaño). Si la app se cierra de golpe con el escritorio grande puesto, al abrirla de nuevo le devuelve al monitor su resolución.
+- Monitor HDMI: sin monitor conectado no propone tamaños (antes salía 3840 × 2160); sin datos del monitor empieza por el más pequeño; los textos hablan de HDMI, Thunderbolt o USB-C y de cómo va en Mac Intel.
+- Pantallas: la fila «Monitor HDMI ampliado» sale también en los Mac que reciben (el iMac), y el monitor que lo muestra lo dice.
+- El visor de la pantalla recibida tampoco puede abrirse fuera de la vista (por ejemplo tras cambiar o quitar un monitor).
+- Pruebas: la ventana completa se prueba también en la versión Intel (iMac y MacBook Pro) con Rosetta; arregladas las pruebas de presentación, seguridad, interacción y captura temporal, y las de auditoría Intel.
+
+## 0.4.33 · Monitor HDMI con tamaños razonables
+
+- Monitor HDMI: los tamaños se calculan desde lo que el monitor aparenta ahora (un 4K usado «como 1920 × 1080» parte de 1920 × 1080, no de sus 3840 × 2160 píxeles). Antes salían escritorios enormes con letra diminuta.
+- Nuevos tamaños pequeños (×1,1 y ×1,2) y, si no hay uno guardado, se propone el más pequeño.
+- Cambiar «Escritorio» se aplica al momento si el escritorio grande está activo; si no, avisa de que hay que pulsar Crear y mostrar (antes no hacía nada visible).
+
+## 0.4.32 · Las pantallas de otros equipos no se tocan
+
+- Arreglo (iMac): la app ya no cambia por su cuenta ningún monitor (por ejemplo el conectado por Thunderbolt). Un monitor que quedó «apagado» desde Pantallas vuelve a la normalidad al abrir la app, en vez de apagarse otra vez (duplicar + negro, lo que le cambiaba la resolución).
+- La pantalla principal (la de la barra de menús) ya no se puede apagar desde Pantallas.
+- El guardián de tamaños de la 0.4.31 solo actúa mientras hay conectada una TV con «Corregir monitor», y no existe en los Mac Intel (iMac, MacBook Pro).
+- Si la ventana se guardó en un monitor que ya no está o ha cambiado, al abrir aparece en el centro de la pantalla principal (antes podía abrirse fuera de la vista y parecía que la app no se abría).
+- La barra lateral muestra los pasos breves para elegir Enviar o Recibir.
+- La prueba de Layout incluye Startup.swift, que necesita la interfaz actual.
+- README sincronizado con las versiones Mac y Windows.
+
+## 0.4.31 · Revisión de Herramientas
+
+- Pantalla del Mac: ya no se queda pequeña (1280 × 828) después de encender, apagar o duplicar la TV. Solo se recuerda el tamaño que eliges tú con las pantallas quietas; el que pone macOS al cambiar de pantallas se deshace solo.
+- Pantallas: al apagar la TV desde la lista, la corrección queda en pausa y vuelve sola al activarla otra vez. Si Monitor HDMI estaba usando ese monitor, se detiene antes.
+- Monitor HDMI: la lista se actualiza sola al conectar o encender un monitor (antes decía que no había ninguno). Si la TV la está usando Corregir monitor, lo explica en vez de fallar.
+- Mapa de pantallas: el escritorio corregido aparece con el nombre de la TV («… corregida») y no como «HDMI ampliado»; ya no se dibuja la TV de debajo ni los monitores que duplican. Al moverlo, la TV va con él. El PC dice si está sin conectar.
+- Brillo: «Todo este Mac» muestra su porcentaje y se mueve con «Todas»; la barra de abajo enseña el mismo brillo que la página.
+- PC con Windows: si falta la clave del PC en este Mac lo dice claramente (antes ponía «Guardada en el Llavero» y no hacía nada) y avisa si macOS no deja guardarla.
+- Pantalla completa (barra de abajo): funciona también con un solo Mac conectado.
+- Corregir monitor: al cerrar la app, la TV vuelve a su sitio antes de salir.
+- Corregir monitor: «Escala» y «Mover» ya no tienen recorrido muerto. Cada barra acaba donde la imagen deja de cambiar (sin cortarla); si no hay hueco para moverla, la barra se apaga y dice «sin hueco» y por qué.
+- Corregir monitor: al empezar a mano, la TV vuelve primero a su tamaño guardado, y ya no se guarda por error un tamaño que haya dejado Monitor HDMI.
+- Corregir monitor: las ventanas que quedaban en la TV debajo de la imagen corregida (invisibles e inalcanzables con el ratón, también la de PRISON DISPLAY) pasan solas al escritorio corregido, en el mismo sitio.
+- Corregir monitor: «Anchura» se pega a 100 % y «Mover» a 0 al pasar cerca, para dejarlas exactas.
+- Monitor HDMI: «Detener» tardaba 15 s con la TV duplicando la pantalla del Mac y la app congelada; ahora vuelve al instante. El escritorio grande ocupa el sitio del monitor (el ratón sale por el mismo borde), el monitor mantiene su nombre y los errores de «Crear y mostrar» ya no se borran al momento.
+- Mapa de pantallas: más grande y legible (sin espacio vacío salvo el lado del PC); el PC siempre se lee.
+- Monitor HDMI: los tamaños se calculan desde el tamaño que usa ahora el monitor (una TV por VGA dice 1920 × 1080 aunque solo se ve bien a 1280 × 1024), y al detenerlo el monitor vuelve a su tamaño de antes.
+
 ## 0.4.30
 
 - Corregir monitor: si macOS deja la TV en negro al conectarla (pasa con «Preguntar qué mostrar»), la app la enciende sola creando el escritorio corregido y pone tus ajustes guardados.

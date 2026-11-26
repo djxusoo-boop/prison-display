@@ -68,6 +68,7 @@ func visibleText(_ view: NSView) -> [String] {
     guard !view.isHidden else { return [] }
     return (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(visibleText)
 }
+check(visibleText(controller.window.contentView!).contains(where: { $0.contains("1. Usa Enviar") }), "simple mode shows the 1-2-3 role guidance in the sidebar")
 // Deterministic discovery regressions: duplicates, disappearing devices,
 // stale controls, non-service endpoints and connection-state buttons.
 controller.select(.receive)
@@ -217,7 +218,7 @@ for role in [ScreenRole.receive, .send, .receive] {
 }
 }
 // Each tool opens its own page from the sidebar and screens remain one click away.
-for (button, name) in [(controller.mapButton, "map"), (controller.hdmiButton, "hdmi"), (controller.pcButton, "pc")] {
+for (button, name) in [(controller.mapButton, "map"), (controller.hdmiButton, "hdmi"), (controller.pcButton, "pc")] where !button.isHidden {
     controller.chooseTool(button)
     let visible = controller.container.subviews.filter { !$0.isHidden }
     check(visible.count == 1 && button.selected && !controller.sendButton.selected, "tool \(name) shows only its own page")

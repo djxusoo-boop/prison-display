@@ -78,5 +78,40 @@ for (title, share) in [("nombre de monitor raro", CorrectionShare(monitor: "../x
     check(!CorrectionStore.merge(share.data), "rechaza: \(title)")
 }
 check(!CorrectionStore.merge(Data(repeating: 65, count: 2000)), "rechaza datos demasiado grandes")
+// Límites de las barras: Escala y Mover acaban donde la imagen deja de cambiar.
+var tele = CorrectionSettings(); tele.desktopWidth = 1680; tele.desktopHeight = 1050; tele.screenAspect = 16.0 / 9
+let tvFrame = CGSize(width: 1280, height: 1024), tvDesk = CGSize(width: 1680, height: 1050)
+let lim = CorrectionSettings.limits(frame: tvFrame, desktop: tvDesk, settings: tele)
+check(abs(lim.scale.upperBound - 1) < 0.001, "con la imagen a todo el alto, la Escala acaba en 100 % (\(lim.scale))")
+check(lim.offsetY == 0...0, "sin hueco arriba ni abajo, Mover vertical no tiene recorrido (\(lim.offsetY))")
+check(lim.offsetX == -64...64, "Mover horizontal llega justo hasta los bordes (\(lim.offsetX))")
+var smaller = tele; smaller.scale = 0.8
+let lim2 = CorrectionSettings.limits(frame: tvFrame, desktop: tvDesk, settings: smaller)
+check(lim2.offsetY.lowerBound < 0 && lim2.offsetY.upperBound > 0, "al bajar la Escala ya se puede mover en vertical")
+for x in [lim2.offsetX.lowerBound, lim2.offsetX.upperBound] {
+    var moved = smaller; moved.offsetX = x
+    let r = CorrectionSettings.layout(frame: tvFrame, desktop: tvDesk, settings: moved)
+    check(r.minX >= 0 && r.maxX <= tvFrame.width && (r.minX == 0 || r.maxX == tvFrame.width), "en el extremo de Mover, la imagen toca el borde sin cortarse")
+}
+var margins = tele; margins.top = 100; margins.bottom = 100
+check(CorrectionSettings.limits(frame: tvFrame, desktop: tvDesk, settings: margins).scale.upperBound > 1, "con márgenes, la Escala puede pasar de 100 %")
+var wild = tele; wild.scale = 1.5; wild.offsetX = 600; wild.offsetY = -400
+wild.clamp(to: lim)
+check(abs(wild.scale - 1) < 0.001 && wild.offsetX == 64 && wild.offsetY == 0, "los valores que no hacen nada se ajustan a lo que se ve")
+check(CorrectionSettings.layout(frame: tvFrame, desktop: tvDesk, settings: wild) == CorrectionSettings.layout(frame: tvFrame, desktop: tvDesk, settings: { var t = tele; t.scale = 1.5; t.offsetX = 600; t.offsetY = -400; return t }()), "ajustarlos no cambia la imagen")
+// Resolución del monitor: solo la que elige el usuario, no la que pone macOS al cambiar pantallas.
+let screen = CGMainDisplayID(), modeKey = CorrectionStore.key(screen) + ".mode"
+if let mode = CGDisplayCopyDisplayMode(screen) {
+    ModeKeeper.isStable = false
+    CorrectionStore.rememberModes(monitor: screen)
+    check(CorrectionStore.defaults.array(forKey: modeKey) as? [Int] == [mode.width, mode.height], "la primera vez guarda la resolución aunque las pantallas estén cambiando")
+    CorrectionStore.defaults.set([640, 480], forKey: modeKey)
+    CorrectionStore.rememberModes(monitor: screen)
+    check(CorrectionStore.defaults.array(forKey: modeKey) as? [Int] == [640, 480], "mientras las pantallas cambian no pisa la resolución guardada")
+    ModeKeeper.isStable = true
+    CorrectionStore.rememberModes(monitor: screen)
+    check(CorrectionStore.defaults.array(forKey: modeKey) as? [Int] == [mode.width, mode.height], "con las pantallas quietas guarda la resolución elegida")
+    check(CorrectionStore.defaults.array(forKey: "PrisonDisplay.correction.builtinMode") == nil, "no guarda la pantalla del Mac desde aquí")
+} else { check(false, "hay una pantalla para probar") }
 UserDefaults().removePersistentDomain(forName: suite)
 print("RESULT \(checks) checks \(failures) failures"); exit(failures == 0 ? 0 : 1)
